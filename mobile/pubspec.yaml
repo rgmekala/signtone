@@ -1,0 +1,44 @@
+name: mobile
+description: "Signtone - Hear it. Sign it. Done."
+publish_to: 'none'
+version: 1.0.0+1
+
+environment:
+  sdk: '>=3.4.0 <4.0.0'
+
+dependencies:
+  flutter:
+    sdk: flutter
+
+  # HTTP client
+  dio: ^5.4.0
+
+  # Secure local storage (JWT, profile)
+  flutter_secure_storage: ^9.0.0
+
+  # LinkedIn OAuth browser flow
+  flutter_web_auth_2: ^5.0.0
+
+  # Google Sign-In (lightweight, local only)
+  google_sign_in: ^6.2.1
+
+  # Audio recording
+  record: ^6.0.0
+
+  # Permissions (microphone)
+  permission_handler: ^11.3.0
+
+  # State management
+  provider: ^6.1.2
+
+  # Simple key-value storage (non-sensitive prefs)
+  shared_preferences: ^2.2.3
+
+  # .env loader
+  flutter_dotenv: ^5.1.0
+  record_linux: ^1.3.0
+
+flutter:
+  uses-material-design: true
+  assets:
+    - .env

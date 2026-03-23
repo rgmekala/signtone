@@ -1,0 +1,30 @@
+# Python
+__pycache__/
+*.py[cod]
+venv/
+.pytest_cache/
+
+# Secrets - never commit
+backend/.env
+dashboard/.env
+mobile/.env
+mobile/ios/Runner/GoogleService-Info.plist
+
+# Flutter build artifacts
+mobile/build/
+mobile/.dart_tool/
+mobile/.flutter-plugins
+mobile/.flutter-plugins-dependencies
+mobile/ios/Pods/
+mobile/ios/.symlinks/
+mobile/ios/Flutter/Flutter.framework
+mobile/ios/Flutter/Flutter.podspec
+mobile/ios/Generated.xcconfig
+mobile/ios/flutter_export_environment.sh
+
+# macOS
+.DS_Store
+**/.DS_Store
+
+# Logs
+*.log
