@@ -132,6 +132,19 @@ class ListenerService extends ChangeNotifier {
   }
 
   // ─────────────────────────────────────────
+  // Reset match state - used when user taps
+  // "Not now" on the QuickJoinSheet.
+  // Clears match data and resumes listening
+  // without restarting the mic stream.
+  // ─────────────────────────────────────────
+  void reset() {
+    _matchData = null;
+    if (_state == ListenerState.matched) {
+      _setState(ListenerState.listening);
+    }
+  }
+
+  // ─────────────────────────────────────────
   // Audio data handler
   // ─────────────────────────────────────────
   void _onAudioData(Uint8List bytes) {
@@ -188,22 +201,21 @@ class ListenerService extends ChangeNotifier {
 
     final result = await _matcher.matchSamples(toSend);
     _isSending = false;
-     
-     if (result != null) {
-        _matchData = result;
-        _setState(ListenerState.matched);
-        await _audioSub?.cancel();
-        _audioSub = null;
-        await _recorder.pause();
 
-        // Donate to Siri so it learns the pattern and shows suggestions
-        SiriService().donateBeacon(
-        );
-           eventName:     result['event_name']?.toString()     ?? '',
-           eventId:       result['event_id']?.toString()       ?? '',
-           beaconPayload: result['beacon_payload']?.toString() ?? '',
-     }
-     else {
+    if (result != null) {
+      _matchData = result;
+      _setState(ListenerState.matched);
+      await _audioSub?.cancel();
+      _audioSub = null;
+      await _recorder.pause();
+
+      // Donate to Siri so it learns the pattern and shows suggestions
+      SiriService().donateBeacon(
+        eventName:     result['event_name']?.toString()     ?? '',
+        eventId:       result['event_id']?.toString()       ?? '',
+        beaconPayload: result['beacon_payload']?.toString() ?? '',
+      );
+    } else {
       if (_state == ListenerState.detecting) {
         _setState(ListenerState.listening);
       }

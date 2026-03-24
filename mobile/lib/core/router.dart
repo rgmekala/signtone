@@ -9,9 +9,6 @@ import '../features/history/activity_log.dart';
 import '../features/profiles/professional_profile.dart';
 import '../features/profiles/public_profile.dart';
 
-// ─────────────────────────────────────────
-// AppRouter - generates routes + guards
-// ─────────────────────────────────────────
 class AppRouter {
   AppRouter._();
 
@@ -24,10 +21,12 @@ class AppRouter {
         return _fade(const LoginScreen());
 
       case AppConstants.routeHome:
-        return _fade(const _AuthGuard(child: MicListenerScreen()));
+        // ✅ NO _AuthGuard here - listener is open to everyone
+        return _fade(const MicListenerScreen());
 
       case AppConstants.routeConfirm:
         final args = settings.arguments as Map<String, dynamic>? ?? {};
+        // ✅ Confirm still needs auth - user will have JWT by the time they get here
         return _slide(
           _AuthGuard(child: ConfirmCard(matchData: args)),
           direction: _SlideDirection.up,
@@ -55,8 +54,8 @@ class AppRouter {
 }
 
 // ─────────────────────────────────────────
-// Auth Guard - wraps any screen that
-// requires a logged-in user
+// Auth Guard - wraps screens that require login
+// (NOT used on routeHome anymore)
 // ─────────────────────────────────────────
 class _AuthGuard extends StatelessWidget {
   final Widget child;
@@ -68,13 +67,10 @@ class _AuthGuard extends StatelessWidget {
       builder: (context, auth, _) {
         switch (auth.status) {
           case AuthStatus.unknown:
-            // Still initializing - show blank screen briefly
             return const Scaffold(
               body: Center(child: CircularProgressIndicator()),
             );
           case AuthStatus.unauthenticated:
-            // Redirect to login - use addPostFrameCallback to avoid
-            // calling Navigator during build
             WidgetsBinding.instance.addPostFrameCallback((_) {
               Navigator.of(context).pushNamedAndRemoveUntil(
                 AppConstants.routeLogin,
@@ -91,8 +87,8 @@ class _AuthGuard extends StatelessWidget {
 }
 
 // ─────────────────────────────────────────
-// Splash Gate - decides first route
-// based on auth state
+// Splash Gate - always goes to Home (listener)
+// Login is now optional / profile-driven
 // ─────────────────────────────────────────
 class _SplashGate extends StatefulWidget {
   const _SplashGate();
@@ -109,7 +105,6 @@ class _SplashGateState extends State<_SplashGate> {
   }
 
   Future<void> _navigate() async {
-    // Minimum splash display time
     await Future.delayed(
       const Duration(milliseconds: AppConstants.splashDurationMs),
     );
@@ -117,7 +112,6 @@ class _SplashGateState extends State<_SplashGate> {
 
     final auth = context.read<AuthService>();
 
-    // Wait until AuthService finishes initializing
     if (auth.status == AuthStatus.unknown) {
       await Future.doWhile(() async {
         await Future.delayed(const Duration(milliseconds: 100));
@@ -126,22 +120,17 @@ class _SplashGateState extends State<_SplashGate> {
     }
 
     if (!mounted) return;
-    final route = auth.isAuthenticated
-        ? AppConstants.routeHome
-        : AppConstants.routeLogin;
 
-    Navigator.of(context).pushReplacementNamed(route);
+    // ✅ Always go to listener - auth is no longer a gate
+    Navigator.of(context).pushReplacementNamed(AppConstants.routeHome);
   }
 
   @override
-  Widget build(BuildContext context) {
-    // Reuse the splash UI already in main.dart
-    return const _SplashScreen();
-  }
+  Widget build(BuildContext context) => const _SplashScreen();
 }
 
 // ─────────────────────────────────────────
-// Splash Screen UI
+// Splash Screen UI (unchanged)
 // ─────────────────────────────────────────
 class _SplashScreen extends StatelessWidget {
   const _SplashScreen();
@@ -182,7 +171,7 @@ class _SplashScreen extends StatelessWidget {
 }
 
 // ─────────────────────────────────────────
-// 404 Screen
+// 404 Screen (unchanged)
 // ─────────────────────────────────────────
 class _NotFoundScreen extends StatelessWidget {
   const _NotFoundScreen();
@@ -211,7 +200,7 @@ class _NotFoundScreen extends StatelessWidget {
 }
 
 // ─────────────────────────────────────────
-// Transition helpers
+// Transition helpers (unchanged)
 // ─────────────────────────────────────────
 enum _SlideDirection { left, up }
 

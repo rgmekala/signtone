@@ -4,6 +4,7 @@ import '../../core/constants.dart';
 import '../../core/theme.dart';
 import '../../features/auth/auth_service.dart';
 import 'listener_service.dart';
+import 'quick_join_sheet.dart';
 
 class MicListenerScreen extends StatefulWidget {
   const MicListenerScreen({super.key});
@@ -50,16 +51,57 @@ class _MicListenerScreenState extends State<MicListenerScreen>
     _listener.addListener(_onListenerStateChange);
   }
 
+  // ─────────────────────────────────────────
+  // Match handler - checks auth before routing
+  // ─────────────────────────────────────────
   void _onListenerStateChange() {
     if (!mounted) return;
     if (_listener.state == ListenerState.matched &&
         _listener.matchData != null) {
-      Navigator.of(context).pushNamed(
-        AppConstants.routeConfirm,
-        arguments: _listener.matchData,
-      );
+
+      final auth = context.read<AuthService>();
+
+      if (auth.isAuthenticated) {
+        // Already logged in - go straight to confirm as before
+        Navigator.of(context).pushNamed(
+          AppConstants.routeConfirm,
+          arguments: _listener.matchData,
+        );
+      } else {
+        // First time user - slide up quick join sheet
+        _showQuickJoinSheet(_listener.matchData!);
+      }
     }
     setState(() {});
+  }
+
+  // ─────────────────────────────────────────
+  // Quick join sheet - shown to unauthenticated users
+  // on beacon detection
+  // ─────────────────────────────────────────
+  void _showQuickJoinSheet(Map<String, dynamic> matchData) {
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      isDismissible: false,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+      ),
+      builder: (_) => QuickJoinSheet(
+        eventName: matchData['event_name']?.toString() ?? 'this event',
+        onJoined: () {
+          Navigator.of(context).pop(); // close sheet
+          Navigator.of(context).pushNamed(
+            AppConstants.routeConfirm,
+            arguments: matchData,
+          );
+        },
+        onDismiss: () {
+          Navigator.of(context).pop();
+          _listener.reset(); // clear match, resume listening
+        },
+      ),
+    );
   }
 
   @override
