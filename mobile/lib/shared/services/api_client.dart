@@ -10,30 +10,34 @@ class ApiClient {
   late final Dio _dio;
   final _storage = const FlutterSecureStorage();
 
-  static const _tokenKey = 'jwt_token';
+  static const _tokenKey   = 'jwt_token';
   static const _profileKey = 'user_profile';
 
   ApiClient._internal() {
     final baseUrl = dotenv.env['API_BASE_URL'] ?? 'http://localhost:8000';
 
     _dio = Dio(BaseOptions(
-      baseUrl: baseUrl,
-      connectTimeout: const Duration(seconds: 10),
-      receiveTimeout: const Duration(seconds: 15),
+      baseUrl:         baseUrl,
+      connectTimeout:  const Duration(seconds: 10),
+      receiveTimeout:  const Duration(seconds: 30),
+      followRedirects: true,
+      maxRedirects:    3,
       headers: {'Content-Type': 'application/json'},
     ));
 
-    // --- Request interceptor: attach JWT on every call ---
     _dio.interceptors.add(InterceptorsWrapper(
       onRequest: (options, handler) async {
-        final token = await getToken();
-        if (token != null) {
-          options.headers['Authorization'] = 'Bearer $token';
+        try {
+          final token = await getToken();
+          if (token != null) {
+            options.headers['Authorization'] = 'Bearer $token';
+          }
+        } catch (_) {
+          // Plugin not ready yet on cold start - skip token attachment
         }
         return handler.next(options);
       },
       onError: (DioException e, handler) async {
-        // 401 → clear stale token, caller handles redirect
         if (e.response?.statusCode == 401) {
           await clearToken();
         }
@@ -76,16 +80,13 @@ class ApiClient {
   // AUTH
   // ─────────────────────────────────────────
 
-  /// Returns the LinkedIn OAuth URL to open in a browser.
   Future<String> getLinkedInAuthUrl() async {
     final res = await _dio.get('/auth/linkedin');
     return res.data['auth_url'] as String;
   }
 
-  /// Exchange the OAuth callback URL for a JWT + user profile.
   Future<Map<String, dynamic>> handleLinkedInCallback(String callbackUrl) async {
-    // Parse params from signtone://auth/callback?access_token=...
-    final uri = Uri.parse(callbackUrl);
+    final uri   = Uri.parse(callbackUrl);
     final token = uri.queryParameters['access_token'];
     if (token == null || token.isEmpty) {
       throw Exception('No access token in LinkedIn callback');
@@ -93,14 +94,27 @@ class ApiClient {
     await saveToken(token);
 
     final user = {
-      'name':         uri.queryParameters['name']     ?? '',
-      'email':        uri.queryParameters['email']    ?? '',
+      'name':            uri.queryParameters['name']     ?? '',
+      'email':           uri.queryParameters['email']    ?? '',
       'profile_picture': uri.queryParameters['picture']  ?? '',
-      'headline':     uri.queryParameters['headline'] ?? '',
-      'linkedin_id':  uri.queryParameters['user_id']  ?? '',
+      'headline':        uri.queryParameters['headline'] ?? '',
+      'linkedin_id':     uri.queryParameters['user_id']  ?? '',
     };
     await saveProfile(user);
     return {'access_token': token, 'user': user};
+  }
+
+  Future<Map<String, dynamic>> guestLogin({
+    required String name,
+    required String email,
+    String? phone,
+  }) async {
+    final res = await _dio.post('/auth/guest', data: {
+      'name':  name,
+      'email': email,
+      if (phone != null) 'phone': phone,
+    });
+    return res.data as Map<String, dynamic>;
   }
 
   Future<void> logout() => clearAll();
@@ -135,8 +149,41 @@ class ApiClient {
     return (res.data as List).cast<Map<String, dynamic>>();
   }
 
-  /// Match a detected frequency pair against registered beacons.
-  /// [freqs] - list of dominant frequencies captured from mic (Hz).
+  /// Send raw PCM float samples to backend for BFSK decoding.
+  Future<Map<String, dynamic>?> matchSamples(List<double> samples) async {
+    try {
+      print('[ApiClient] matchSamples: sending ${samples.length} samples');
+      final res = await _dio.post(
+        '/signals/match',
+        data: {
+          'samples':     samples,
+          'sample_rate': 44100,
+        },
+      );
+      return res.data as Map<String, dynamic>;
+    } on DioException catch (e) {
+      if (e.response?.statusCode == 404) return null;
+      print('[ApiClient] matchSamples error: ${e.response?.data}');
+      rethrow;
+    }
+  }
+
+  /// Send a pre-decoded beacon payload string to the backend.
+  Future<Map<String, dynamic>?> matchPayload(String beaconPayload) async {
+    try {
+      final res = await _dio.post(
+        '/signals/match',
+        data: {'beacon_payload': beaconPayload},
+      );
+      return res.data as Map<String, dynamic>;
+    } on DioException catch (e) {
+      if (e.response?.statusCode == 404) return null;
+      print('[ApiClient] matchPayload error: ${e.response?.data}');
+      rethrow;
+    }
+  }
+
+  /// Legacy: send detected frequencies (no longer primary path).
   Future<Map<String, dynamic>?> matchSignal(List<double> freqs) async {
     try {
       final res = await _dio.post(
@@ -145,7 +192,7 @@ class ApiClient {
       );
       return res.data as Map<String, dynamic>;
     } on DioException catch (e) {
-      if (e.response?.statusCode == 404) return null; // no match
+      if (e.response?.statusCode == 404) return null;
       rethrow;
     }
   }
@@ -168,28 +215,36 @@ class ApiClient {
   // REGISTRATIONS
   // ─────────────────────────────────────────
 
-  /// Register for an event using a specific profile type.
-  /// [profileType] - 'professional' or 'public'
   Future<Map<String, dynamic>> register({
     required String eventId,
     required String signalId,
     required String profileType,
   }) async {
-    final res = await _dio.post('/registrations', data: {
-      'event_id': eventId,
-      'signal_id': signalId,
-      'profile_type': profileType,
-    });
-    return res.data as Map<String, dynamic>;
+    final payload = {
+      'event_id':        eventId,
+      'beacon_payload':  signalId,
+      'profile_override': profileType,
+    };
+    print('[ApiClient] register payload: $payload');
+    try {
+      final res = await _dio.post('/registrations/', data: payload);
+      return res.data as Map<String, dynamic>;
+    } on DioException catch (e) {
+      // Return error detail as a map so MatchService can show friendly message
+      final detail = e.response?.data?['detail'] as String?
+          ?? e.message
+          ?? 'Registration failed';
+      return {'success': false, 'error': detail};
+    }
   }
 
   Future<List<Map<String, dynamic>>> getMyRegistrations() async {
-    final res = await _dio.get('/registrations/me');
+    final res = await _dio.get('/registrations/user/me');
     return (res.data as List).cast<Map<String, dynamic>>();
   }
 
   // ─────────────────────────────────────────
-  // Generic helpers (for future endpoints)
+  // Generic helpers
   // ─────────────────────────────────────────
 
   Future<dynamic> get(String path, {Map<String, dynamic>? params}) async {

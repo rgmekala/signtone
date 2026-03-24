@@ -61,18 +61,32 @@ class _LoginScreenState extends State<LoginScreen>
   Widget build(BuildContext context) {
     return Scaffold(
       backgroundColor: AppColors.primary,
+      // Resize when keyboard appears to avoid overflow
+      resizeToAvoidBottomInset: true,
       body: SafeArea(
-        child: Column(
-          children: [
-            const SizedBox(height: AppSpacing.xl),
-            _HeroSection(pulseAnimation: _pulseAnimation),
-            const Spacer(),
-            _BottomSheet(
-              tab: _tab,
-              onTabChange: (t) => setState(() => _tab = t),
-              onError: _showError,
+        child: SingleChildScrollView(  // ← fixes overflow
+          physics: const ClampingScrollPhysics(),
+          child: ConstrainedBox(
+            constraints: BoxConstraints(
+              minHeight: MediaQuery.of(context).size.height -
+                  MediaQuery.of(context).padding.top -
+                  MediaQuery.of(context).padding.bottom,
             ),
-          ],
+            child: IntrinsicHeight(
+              child: Column(
+                children: [
+                  const SizedBox(height: AppSpacing.xl),
+                  _HeroSection(pulseAnimation: _pulseAnimation),
+                  const Spacer(),
+                  _BottomSheet(
+                    tab: _tab,
+                    onTabChange: (t) => setState(() => _tab = t),
+                    onError: _showError,
+                  ),
+                ],
+              ),
+            ),
+          ),
         ),
       ),
     );

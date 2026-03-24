@@ -18,17 +18,15 @@ class ConfirmCard extends StatefulWidget {
 class _ConfirmCardState extends State<ConfirmCard>
     with SingleTickerProviderStateMixin {
   late final MatchResult _match;
-  late final MatchService _matcher;
+  late MatchService _matcher; // not final - set in didChangeDependencies
 
-  String _selectedProfile = AppConstants.profileTypeProfessional;
-  bool _isRegistering = false;
-  bool _isRegistered = false;
+  String _selectedProfile = AppConstants.profileTypePublic;
+  bool _isRegistering     = false;
+  bool _isRegistered      = false;
 
-  // Auto-dismiss countdown
   late Timer _dismissTimer;
   int _secondsLeft = AppConstants.confirmationAutoDismissSec;
 
-  // Success animation
   late final AnimationController _successController;
   late final Animation<double> _successScale;
 
@@ -36,7 +34,7 @@ class _ConfirmCardState extends State<ConfirmCard>
   void initState() {
     super.initState();
     _match = MatchResult.fromJson(widget.matchData);
-    _matcher = MatchService();
+    // NOTE: _matcher is set in didChangeDependencies via Provider
 
     _successController = AnimationController(
       vsync: this,
@@ -48,6 +46,13 @@ class _ConfirmCardState extends State<ConfirmCard>
     );
 
     _startDismissTimer();
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    // Use the shared Provider instance - has the saved JWT token
+    _matcher = context.read<MatchService>();
   }
 
   void _startDismissTimer() {
@@ -63,7 +68,6 @@ class _ConfirmCardState extends State<ConfirmCard>
 
   void _dismiss() {
     if (!mounted) return;
-    // Resume listener then pop
     context.read<ListenerService>().resetAndResume();
     Navigator.of(context).pop();
   }
@@ -74,7 +78,7 @@ class _ConfirmCardState extends State<ConfirmCard>
 
     final result = await _matcher.register(
       eventId:     _match.eventId,
-      signalId:    _match.signalId,
+      signalId:    _match.raw['beacon_payload'] as String? ?? _match.signalId,
       profileType: _selectedProfile,
     );
 
@@ -86,17 +90,40 @@ class _ConfirmCardState extends State<ConfirmCard>
         _isRegistered  = true;
       });
       _successController.forward();
-      // Auto-dismiss after showing success
       Future.delayed(const Duration(seconds: 3), _dismiss);
     } else {
       setState(() => _isRegistering = false);
+
+      // Friendly error messages
+      String raw = result.errorMessage ?? 'Registration failed.';
+      String msg;
+      Color  color;
+
+      if (raw.contains('already registered')) {
+        msg   = 'You\'re already registered for this event!';
+        color = AppColors.warning;
+      } else if (raw.contains('LinkedIn profile required')) {
+        msg   = 'This event requires LinkedIn. Please sign in with LinkedIn.';
+        color = AppColors.error;
+      } else if (raw.contains('not active')) {
+        msg   = 'This event is no longer active.';
+        color = AppColors.error;
+      } else if (raw.contains('maximum registrations')) {
+        msg   = 'This event is full - no more spots available.';
+        color = AppColors.error;
+      } else {
+        msg   = raw;
+        color = AppColors.error;
+      }
+
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
-          content: Text(result.errorMessage ?? 'Registration failed.'),
-          backgroundColor: AppColors.error,
+          content: Text(msg),
+          backgroundColor: color,
+          duration: const Duration(seconds: 4),
         ),
       );
-      _startDismissTimer(); // restart countdown on failure
+      _startDismissTimer();
     }
   }
 
@@ -112,16 +139,16 @@ class _ConfirmCardState extends State<ConfirmCard>
     return Scaffold(
       backgroundColor: Colors.black54,
       body: GestureDetector(
-        onTap: _isRegistered ? null : _dismiss, // tap backdrop to dismiss
+        onTap: _isRegistered ? null : _dismiss,
         child: Align(
           alignment: Alignment.bottomCenter,
           child: GestureDetector(
-            onTap: () {}, // absorb taps on card itself
+            onTap: () {},
             child: _isRegistered
                 ? _SuccessCard(
-                    match: _match,
+                    match:       _match,
                     profileType: _selectedProfile,
-                    scaleAnim: _successScale,
+                    scaleAnim:   _successScale,
                   )
                 : _PendingCard(
                     match:           _match,
@@ -182,11 +209,9 @@ class _PendingCard extends StatelessWidget {
         mainAxisSize: MainAxisSize.min,
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          // Handle + countdown row
           Row(
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
-              // Drag handle
               Center(
                 child: Container(
                   width: 40, height: 4,
@@ -196,17 +221,15 @@ class _PendingCard extends StatelessWidget {
                   ),
                 ),
               ),
-              // Countdown pill
               _CountdownPill(secondsLeft: secondsLeft),
             ],
           ),
 
           const SizedBox(height: AppSpacing.lg),
 
-          // Signal detected badge
           Container(
             padding: const EdgeInsets.symmetric(
-              horizontal: AppSpacing.sm, vertical: AppSpacing.xs),
+                horizontal: AppSpacing.sm, vertical: AppSpacing.xs),
             decoration: BoxDecoration(
               color: AppColors.accent.withOpacity(0.12),
               borderRadius: BorderRadius.circular(AppRadius.full),
@@ -226,12 +249,10 @@ class _PendingCard extends StatelessWidget {
 
           const SizedBox(height: AppSpacing.sm),
 
-          // Event name
           Text(match.eventName, style: AppTextStyles.displaySmall),
 
           const SizedBox(height: AppSpacing.xs),
 
-          // Organizer + event type
           Row(
             children: [
               const Icon(Icons.business_rounded,
@@ -265,19 +286,17 @@ class _PendingCard extends StatelessWidget {
           const Divider(),
           const SizedBox(height: AppSpacing.md),
 
-          // Profile selector
           Text('Register as', style: AppTextStyles.label),
           const SizedBox(height: AppSpacing.sm),
 
           _ProfileSelector(
-            selected: selectedProfile,
-            user: user,
+            selected:  selectedProfile,
+            user:      user,
             onChanged: onProfileChange,
           ),
 
           const SizedBox(height: AppSpacing.lg),
 
-          // Confirm button
           ElevatedButton(
             onPressed: isRegistering ? null : onConfirm,
             style: ElevatedButton.styleFrom(
@@ -294,7 +313,6 @@ class _PendingCard extends StatelessWidget {
 
           const SizedBox(height: AppSpacing.sm),
 
-          // Dismiss
           OutlinedButton(
             onPressed: onDismiss,
             style: OutlinedButton.styleFrom(
@@ -328,21 +346,21 @@ class _ProfileSelector extends StatelessWidget {
     return Column(
       children: [
         _ProfileTile(
-          value: AppConstants.profileTypeProfessional,
+          value:      AppConstants.profileTypeProfessional,
           groupValue: selected,
-          title: user?['name'] as String? ?? 'Professional Profile',
-          subtitle: user?['headline'] as String? ?? 'LinkedIn profile',
-          icon: Icons.badge_rounded,
-          onChanged: onChanged,
+          title:      user?['name'] as String? ?? 'Professional Profile',
+          subtitle:   user?['headline'] as String? ?? 'LinkedIn profile',
+          icon:       Icons.badge_rounded,
+          onChanged:  onChanged,
         ),
         const SizedBox(height: AppSpacing.sm),
         _ProfileTile(
-          value: AppConstants.profileTypePublic,
+          value:      AppConstants.profileTypePublic,
           groupValue: selected,
-          title: user?['display_name'] as String? ?? 'Public Profile',
-          subtitle: 'First name + email only',
-          icon: Icons.person_rounded,
-          onChanged: onChanged,
+          title:      user?['display_name'] as String? ?? 'Public Profile',
+          subtitle:   'First name + email only',
+          icon:       Icons.person_rounded,
+          onChanged:  onChanged,
         ),
       ],
     );
@@ -399,7 +417,7 @@ class _ProfileTile extends StatelessWidget {
               ),
             ),
             Radio<String>(
-              value: value,
+              value:    value,
               groupValue: groupValue,
               onChanged: onChanged,
               activeColor: AppColors.primary,
@@ -489,13 +507,13 @@ class _SuccessCard extends StatelessWidget {
           const SizedBox(height: AppSpacing.sm),
           Text(
             match.eventName,
-            style: AppTextStyles.body.copyWith(color: AppColors.textSecondary),
+            style: AppTextStyles.body
+                .copyWith(color: AppColors.textSecondary),
             textAlign: TextAlign.center,
           ),
           const SizedBox(height: AppSpacing.xs),
           Text(
-            'Using your ${profileType == AppConstants.profileTypeProfessional
-                ? 'professional' : 'public'} profile',
+            'Using your ${profileType == AppConstants.profileTypeProfessional ? 'professional' : 'public'} profile',
             style: AppTextStyles.caption,
           ),
           const SizedBox(height: AppSpacing.lg),

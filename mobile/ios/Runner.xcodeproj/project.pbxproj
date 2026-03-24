@@ -13,6 +13,11 @@
 		3B3967161E833CAA004F5970 /* AppFrameworkInfo.plist in Resources */ = {isa = PBXBuildFile; fileRef = 3B3967151E833CAA004F5970 /* AppFrameworkInfo.plist */; };
 		74858FAF1ED2DC5600515810 /* AppDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = 74858FAE1ED2DC5600515810 /* AppDelegate.swift */; };
 		7884E8682EC3CC0700C636F2 /* SceneDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7884E8672EC3CC0400C636F2 /* SceneDelegate.swift */; };
+		930E294A2F71EECE00BB56D3 /* Intents.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 930E29462F71EE8600BB56D3 /* Intents.framework */; };
+		930E294B2F71EECE00BB56D3 /* IntentsUI.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 930E29472F71EE8600BB56D3 /* IntentsUI.framework */; };
+		930E294C2F71EECE00BB56D3 /* Intents.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 930E29462F71EE8600BB56D3 /* Intents.framework */; };
+		930E294D2F71EECE00BB56D3 /* IntentsUI.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 930E29472F71EE8600BB56D3 /* IntentsUI.framework */; };
+		930E29502F71EF9B00BB56D3 /* Signtone.intentdefinition in Sources */ = {isa = PBXBuildFile; fileRef = 930E294F2F71EF9B00BB56D3 /* Signtone.intentdefinition */; };
 		97C146FC1CF9000F007C117D /* Main.storyboard in Resources */ = {isa = PBXBuildFile; fileRef = 97C146FA1CF9000F007C117D /* Main.storyboard */; };
 		97C146FE1CF9000F007C117D /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 97C146FD1CF9000F007C117D /* Assets.xcassets */; };
 		97C147011CF9000F007C117D /* LaunchScreen.storyboard in Resources */ = {isa = PBXBuildFile; fileRef = 97C146FF1CF9000F007C117D /* LaunchScreen.storyboard */; };
@@ -60,6 +65,9 @@
 		7F54202CA6B4D577171ADEAB /* Pods-RunnerTests.debug.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-RunnerTests.debug.xcconfig"; path = "Target Support Files/Pods-RunnerTests/Pods-RunnerTests.debug.xcconfig"; sourceTree = "<group>"; };
 		867130D4D313FDFB78F43993 /* Pods_RunnerTests.framework */ = {isa = PBXFileReference; explicitFileType = wrapper.framework; includeInIndex = 0; path = Pods_RunnerTests.framework; sourceTree = BUILT_PRODUCTS_DIR; };
 		8F18DA81F6DF29C0E95E36CC /* Pods-Runner.debug.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-Runner.debug.xcconfig"; path = "Target Support Files/Pods-Runner/Pods-Runner.debug.xcconfig"; sourceTree = "<group>"; };
+		930E29462F71EE8600BB56D3 /* Intents.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Intents.framework; path = System/Library/Frameworks/Intents.framework; sourceTree = SDKROOT; };
+		930E29472F71EE8600BB56D3 /* IntentsUI.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = IntentsUI.framework; path = System/Library/Frameworks/IntentsUI.framework; sourceTree = SDKROOT; };
+		930E294F2F71EF9B00BB56D3 /* Signtone.intentdefinition */ = {isa = PBXFileReference; lastKnownFileType = file.intentdefinition; path = Signtone.intentdefinition; sourceTree = "<group>"; };
 		9740EEB21CF90195004384FC /* Debug.xcconfig */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = text.xcconfig; name = Debug.xcconfig; path = Flutter/Debug.xcconfig; sourceTree = "<group>"; };
 		9740EEB31CF90195004384FC /* Generated.xcconfig */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = text.xcconfig; name = Generated.xcconfig; path = Flutter/Generated.xcconfig; sourceTree = "<group>"; };
 		97C146EE1CF9000F007C117D /* Runner.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Runner.app; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -82,7 +90,11 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				930E294A2F71EECE00BB56D3 /* Intents.framework in Frameworks */,
 				D092AB419B567E7B369CC88D /* Pods_Runner.framework in Frameworks */,
+				930E294C2F71EECE00BB56D3 /* Intents.framework in Frameworks */,
+				930E294D2F71EECE00BB56D3 /* IntentsUI.framework in Frameworks */,
+				930E294B2F71EECE00BB56D3 /* IntentsUI.framework in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -92,6 +104,8 @@
 		2406217C7801945A2762CBAE /* Frameworks */ = {
 			isa = PBXGroup;
 			children = (
+				930E29462F71EE8600BB56D3 /* Intents.framework */,
+				930E29472F71EE8600BB56D3 /* IntentsUI.framework */,
 				2666D3690E37BE1E06358137 /* Pods_Runner.framework */,
 				867130D4D313FDFB78F43993 /* Pods_RunnerTests.framework */,
 			);
@@ -116,7 +130,6 @@
 				7433BABED38F972A7500D9E5 /* Pods-RunnerTests.release.xcconfig */,
 				74FFFE26DD8E4E83321CF098 /* Pods-RunnerTests.profile.xcconfig */,
 			);
-			name = Pods;
 			path = Pods;
 			sourceTree = "<group>";
 		};
@@ -134,6 +147,7 @@
 		97C146E51CF9000F007C117D = {
 			isa = PBXGroup;
 			children = (
+				930E294F2F71EF9B00BB56D3 /* Signtone.intentdefinition */,
 				9740EEB11CF90186004384FC /* Flutter */,
 				97C146F01CF9000F007C117D /* Runner */,
 				97C146EF1CF9000F007C117D /* Products */,
@@ -399,6 +413,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				74858FAF1ED2DC5600515810 /* AppDelegate.swift in Sources */,
+				930E29502F71EF9B00BB56D3 /* Signtone.intentdefinition in Sources */,
 				1498D2341E8E89220040F4C2 /* GeneratedPluginRegistrant.m in Sources */,
 				7884E8682EC3CC0700C636F2 /* SceneDelegate.swift in Sources */,
 			);
@@ -493,6 +508,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CLANG_ENABLE_MODULES = YES;
 				CURRENT_PROJECT_VERSION = "$(FLUTTER_BUILD_NUMBER)";
+				DEVELOPMENT_TEAM = 4MZP8U2WF7;
 				ENABLE_BITCODE = NO;
 				INFOPLIST_FILE = Runner/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
@@ -675,6 +691,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CLANG_ENABLE_MODULES = YES;
 				CURRENT_PROJECT_VERSION = "$(FLUTTER_BUILD_NUMBER)";
+				DEVELOPMENT_TEAM = 4MZP8U2WF7;
 				ENABLE_BITCODE = NO;
 				INFOPLIST_FILE = Runner/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
@@ -697,6 +714,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CLANG_ENABLE_MODULES = YES;
 				CURRENT_PROJECT_VERSION = "$(FLUTTER_BUILD_NUMBER)";
+				DEVELOPMENT_TEAM = 4MZP8U2WF7;
 				ENABLE_BITCODE = NO;
 				INFOPLIST_FILE = Runner/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (

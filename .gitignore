@@ -28,3 +28,12 @@ mobile/ios/flutter_export_environment.sh
 
 # Logs
 *.log
+
+# iOS build cache
+mobile/ios/build/
+
+# Backup files
+*.bak
+
+# Requirements at root (duplicate)
+requirements.txt

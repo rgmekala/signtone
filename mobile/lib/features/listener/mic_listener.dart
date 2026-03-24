@@ -14,18 +14,17 @@ class MicListenerScreen extends StatefulWidget {
 
 class _MicListenerScreenState extends State<MicListenerScreen>
     with TickerProviderStateMixin {
+
+  // Cache the Provider reference - context.read is NOT safe in dispose()
   late final ListenerService _listener;
 
-  // Pulse rings animation
   late final AnimationController _ringController;
   late final List<Animation<double>> _ringAnimations;
 
   @override
   void initState() {
     super.initState();
-    _listener = ListenerService();
 
-    // Three staggered pulse rings
     _ringController = AnimationController(
       vsync: this,
       duration: const Duration(seconds: 2),
@@ -41,14 +40,18 @@ class _MicListenerScreenState extends State<MicListenerScreen>
         ),
       );
     });
+  }
 
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    // Safe to call context.read here - cache the reference for use in dispose()
+    _listener = context.read<ListenerService>();
     _listener.addListener(_onListenerStateChange);
   }
 
   void _onListenerStateChange() {
     if (!mounted) return;
-
-    // Navigate to confirm screen when a match is found
     if (_listener.state == ListenerState.matched &&
         _listener.matchData != null) {
       Navigator.of(context).pushNamed(
@@ -62,8 +65,8 @@ class _MicListenerScreenState extends State<MicListenerScreen>
   @override
   void dispose() {
     _ringController.dispose();
+    // Safe - using cached reference, NOT context.read()
     _listener.removeListener(_onListenerStateChange);
-    _listener.stop();
     super.dispose();
   }
 
@@ -122,8 +125,7 @@ class _MicListenerScreenState extends State<MicListenerScreen>
           onTap: () =>
               Navigator.of(context).pushNamed(AppConstants.routeProfile),
           child: Padding(
-            padding:
-                const EdgeInsets.only(right: AppSpacing.md),
+            padding: const EdgeInsets.only(right: AppSpacing.md),
             child: CircleAvatar(
               radius: 18,
               backgroundColor: AppColors.primaryLight,
@@ -223,7 +225,6 @@ class _MicButton extends StatelessWidget {
       child: Stack(
         alignment: Alignment.center,
         children: [
-          // Pulse rings - only shown when active
           if (isActive)
             ...ringAnimations.map((anim) => AnimatedBuilder(
                   animation: anim,
@@ -242,8 +243,6 @@ class _MicButton extends StatelessWidget {
                     ),
                   ),
                 )),
-
-          // Main button
           GestureDetector(
             onTap: onTap,
             child: AnimatedContainer(

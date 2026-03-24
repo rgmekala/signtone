@@ -34,18 +34,19 @@ class AppConstants {
   // ─────────────────────────────────────────
 
   /// How long (ms) each audio chunk is before being sent for matching.
-  static const int audioChunkDurationMs = 3000;
+  static const int audioChunkDurationMs = 80;
 
   /// Minimum signal strength to attempt a match (avoids noise triggers).
-  static const double signalThresholdDb = -40.0;
+  static const double signalThresholdDb = -60.0;
 
   /// Sample rate expected by the backend beacon decoder.
-  static const int sampleRateHz = 22050;
+  static const int sampleRateHz = 44100;
 
   /// BFSK frequency band used by Signtone beacons (18-20 kHz).
   /// Must match beacon_service.py on the backend.
-  static const double beaconFreqLow  = 18000.0; // Hz - bit 0
-  static const double beaconFreqHigh = 19000.0; // Hz - bit 1
+  static const double beaconFreqSync = 15000.0; // Hz - sync/preamble tone (NEW)
+  static const double beaconFreqLow  = 16000.0; // Hz - bit 0  (was 18000)
+  static const double beaconFreqHigh = 17000.0; // Hz - bit 1  (was 19000)
 
   // ─────────────────────────────────────────
   // Profile types

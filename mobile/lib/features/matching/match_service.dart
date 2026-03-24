@@ -2,18 +2,17 @@ import 'package:flutter/foundation.dart';
 import '../../shared/services/api_client.dart';
 
 // ─────────────────────────────────────────
-// MatchResult - typed wrapper around
-// the raw API response
+// MatchResult
 // ─────────────────────────────────────────
 class MatchResult {
   final String signalId;
   final String eventId;
   final String eventName;
   final String eventDescription;
-  final String eventType;      // 'conference' | 'sweepstake' | 'broadcast'
+  final String eventType;
   final String organizerName;
   final DateTime? eventDate;
-  final double confidence;     // 0.0 - 1.0 from vector search score
+  final double confidence;
   final Map<String, dynamic> raw;
 
   const MatchResult({
@@ -29,32 +28,37 @@ class MatchResult {
   });
 
   factory MatchResult.fromJson(Map<String, dynamic> json) {
+    // Safe string extractor - handles String, List, null
+    String s(dynamic v, [String fallback = '']) {
+      if (v == null) return fallback;
+      if (v is String) return v;
+      if (v is List) return v.isNotEmpty ? v.first.toString() : fallback;
+      return v.toString();
+    }
+
     return MatchResult(
-      signalId:         json['signal_id']         as String? ?? '',
-      eventId:          json['event_id']           as String? ?? '',
-      eventName:        json['event_name']         as String? ?? 'Unknown Event',
-      eventDescription: json['event_description'] as String? ?? '',
-      eventType:        json['event_type']         as String? ?? 'conference',
-      organizerName:    json['organizer_name']     as String? ?? '',
+      signalId:         s(json['signal_id']),
+      eventId:          s(json['event_id']),
+      eventName:        s(json['event_name'],        'Unknown Event'),
+      eventDescription: s(json['event_description']),
+      eventType:        s(json['event_type'],        'conference'),
+      organizerName:    s(json['organizer_name']),
       confidence:       (json['confidence'] as num?)?.toDouble() ?? 0.0,
       eventDate: json['event_date'] != null
-          ? DateTime.tryParse(json['event_date'] as String)
+          ? DateTime.tryParse(json['event_date'].toString())
           : null,
       raw: json,
     );
   }
 
-  /// True if the match score is strong enough to show a confirmation.
   bool get isHighConfidence => confidence >= 0.75;
 
-  /// Human-readable event type label.
   String get eventTypeLabel => switch (eventType) {
         'sweepstake' => 'Sweepstake',
         'broadcast'  => 'Broadcast',
         _            => 'Conference',
       };
 
-  /// Icon name hint for the UI layer.
   String get eventTypeIcon => switch (eventType) {
         'sweepstake' => 'emoji_events_rounded',
         'broadcast'  => 'radio_rounded',
@@ -74,24 +78,74 @@ class MatchService extends ChangeNotifier {
   MatchResult? _lastMatch;
   String? _errorMessage;
 
-  bool get isMatching       => _isMatching;
+  bool get isMatching        => _isMatching;
   MatchResult? get lastMatch => _lastMatch;
-  String? get errorMessage  => _errorMessage;
+  String? get errorMessage   => _errorMessage;
 
-  // ─────────────────────────────────────────
-  // Core match call
-  // ─────────────────────────────────────────
-
-  /// Send detected frequencies to the backend.
-  /// Returns a [MatchResult] on success, null if no match.
-  Future<Map<String, dynamic>?> matchFrequencies(
-      List<double> frequencies) async {
-    if (_isMatching) return null; // debounce concurrent calls
-
+  /// Send a pre-decoded beacon payload string to the backend.
+  Future<Map<String, dynamic>?> matchPayload(String beaconPayload) async {
+    if (_isMatching) return null;
     _isMatching = true;
     _errorMessage = null;
     notifyListeners();
+    try {
+      debugPrint('[MatchService] sending beacon_payload: $beaconPayload');
+      final raw = await _api.matchPayload(beaconPayload);
+      if (raw == null || raw['matched'] == false) {
+        debugPrint('[MatchService] no match: ${raw?['message']}');
+        _isMatching = false;
+        notifyListeners();
+        return null;
+      }
+      final result = MatchResult.fromJson(raw);
+      _lastMatch = result;
+      _isMatching = false;
+      notifyListeners();
+      return result.toArgs();
+    } catch (e) {
+      debugPrint('[MatchService] matchPayload error: $e');
+      _errorMessage = 'Match failed: $e';
+      _isMatching = false;
+      notifyListeners();
+      return null;
+    }
+  }
 
+  /// Send raw PCM samples to backend for server-side BFSK decode.
+  Future<Map<String, dynamic>?> matchSamples(List<double> samples) async {
+    if (_isMatching) return null;
+    _isMatching = true;
+    _errorMessage = null;
+    notifyListeners();
+    try {
+      final raw = await _api.matchSamples(samples);
+      if (raw == null || raw['matched'] == false) {
+        debugPrint('[MatchService] no match: ${raw?['message']}');
+        _isMatching = false;
+        notifyListeners();
+        return null;
+      }
+      final result = MatchResult.fromJson(raw);
+      _lastMatch = result;
+      _isMatching = false;
+      notifyListeners();
+      return result.toArgs();
+    } catch (e) {
+      debugPrint('[MatchService] matchSamples error: $e');
+      _errorMessage = 'Match failed: $e';
+      _isMatching = false;
+      notifyListeners();
+      return null;
+    }
+  }
+
+  /// Legacy: send detected frequencies (no longer primary path).
+  Future<Map<String, dynamic>?> matchFrequencies(
+      List<double> frequencies) async {
+    if (_isMatching) return null;
+    _isMatching = true;
+    _errorMessage = null;
+    notifyListeners();
     try {
       final raw = await _api.matchSignal(frequencies);
       if (raw == null) {
@@ -99,18 +153,13 @@ class MatchService extends ChangeNotifier {
         notifyListeners();
         return null;
       }
-
       final result = MatchResult.fromJson(raw);
-
-      // Only accept high-confidence matches
       if (!result.isHighConfidence) {
-        debugPrint(
-            '[MatchService] Low confidence (${result.confidence}) - ignored');
+        debugPrint('[MatchService] Low confidence (${result.confidence}) - ignored');
         _isMatching = false;
         notifyListeners();
         return null;
       }
-
       _lastMatch = result;
       _isMatching = false;
       notifyListeners();
@@ -123,12 +172,7 @@ class MatchService extends ChangeNotifier {
     }
   }
 
-  // ─────────────────────────────────────────
-  // Register for the matched event
-  // ─────────────────────────────────────────
-
-  /// Called from ConfirmCard when the user taps "Register".
-  /// [profileType] - 'professional' | 'public'
+  /// Register for the matched event.
   Future<RegistrationResult> register({
     required String eventId,
     required String signalId,
@@ -136,8 +180,8 @@ class MatchService extends ChangeNotifier {
   }) async {
     try {
       final raw = await _api.register(
-        eventId: eventId,
-        signalId: signalId,
+        eventId:     eventId,
+        signalId:    signalId,
         profileType: profileType,
       );
       return RegistrationResult.fromJson(raw);
@@ -169,15 +213,22 @@ class RegistrationResult {
   });
 
   factory RegistrationResult.fromJson(Map<String, dynamic> json) {
+    // Handle error map returned from api_client catch block
+    if (json.containsKey('error')) {
+      return RegistrationResult(
+        success:      false,
+        errorMessage: json['error'] as String?,
+      );
+    }
     return RegistrationResult(
       success:        (json['success'] as bool?) ?? true,
-      registrationId: json['registration_id'] as String?,
+      registrationId: json['id'] as String?,
       message:        json['message'] as String?,
     );
   }
 
   factory RegistrationResult.error(String msg) => RegistrationResult(
-        success: false,
+        success:      false,
         errorMessage: msg,
       );
 }

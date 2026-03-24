@@ -142,40 +142,42 @@ async def delete_signal(signal_id: str):
 
 
 # ── Match detected audio ──────────────────────────────────────────────────────
-
 @router.post("/match", response_model=SignalMatchResult)
 async def match_signal(audio_data: dict):
     """
     Called by the mobile app when it detects audio.
-    Accepts raw PCM samples as a list of floats and attempts
-    to decode a beacon payload, then looks up the matching event.
-
-    Request body:
-        { "samples": [0.1, -0.2, ...], "sample_rate": 44100 }
+    Accepts EITHER:
+      A) Pre-decoded payload: { "beacon_payload": "TEST_EVENT_001" }
+      B) Raw PCM samples:     { "samples": [0.1, -0.2, ...], "sample_rate": 44100 }
     """
-    samples = audio_data.get("samples")
-    sr      = audio_data.get("sample_rate", SAMPLE_RATE)
+    # ── Path A: Flutter Goertzel already decoded the payload ──────────────────
+    beacon_payload = audio_data.get("beacon_payload")
+    if beacon_payload:
+        payload = beacon_payload
+    # ── Path B: Raw PCM - decode server-side ──────────────────────────────────
+    else:
+        samples = audio_data.get("samples")
+        sr      = audio_data.get("sample_rate", SAMPLE_RATE)
+        if not samples:
+            raise HTTPException(status_code=400, detail="No audio samples provided")
+        signal  = np.array(samples, dtype=np.float32)
+        max_val = np.max(np.abs(signal))
+        if max_val > 0:
+           signal = signal / max_val
 
-    if not samples:
-        raise HTTPException(status_code=400, detail="No audio samples provided")
+        payload = decode_signal(signal, sr)
+        if not payload:
+            return SignalMatchResult(
+                matched   = False,
+                confidence= 0.0,
+                message   = "No beacon detected in audio"
+            )
 
-    # Convert list to numpy array and decode
-    signal  = np.array(samples, dtype=np.float32)
-    payload = decode_signal(signal, sr)
-
-    if not payload:
-        return SignalMatchResult(
-            matched   = False,
-            confidence= 0.0,
-            message   = "No beacon detected in audio"
-        )
-
-    # Look up signal in DB
+    # ── Look up signal in DB ───────────────────────────────────────────────────
     sig_doc = await col_signals().find_one({
         "beacon_payload": payload,
         "status": SignalStatus.ACTIVE,
     })
-
     if not sig_doc:
         return SignalMatchResult(
             matched        = False,
@@ -183,7 +185,6 @@ async def match_signal(audio_data: dict):
             confidence     = 1.0,
             message        = "Beacon decoded but no active signal found for this payload"
         )
-
     # Check expiry
     if sig_doc.get("expires_at") and sig_doc["expires_at"] < datetime.now(timezone.utc):
         return SignalMatchResult(
@@ -192,15 +193,22 @@ async def match_signal(audio_data: dict):
         )
 
     logger.info(f"Signal matched: '{payload}' → event {sig_doc['event_id']}")
-    return SignalMatchResult(
-        matched        = True,
-        signal_id      = str(sig_doc["_id"]),
-        event_id       = sig_doc["event_id"],
-        beacon_payload = payload,
-        confidence     = 1.0,
-        message        = "Beacon matched successfully"
-    )
 
+    # Fetch event details to enrich the confirmation card
+    event_doc = await col_events().find_one({"_id": ObjectId(sig_doc["event_id"])})
+
+    return SignalMatchResult(
+        matched           = True,
+        signal_id         = str(sig_doc["_id"]),
+        event_id          = sig_doc["event_id"],
+        beacon_payload    = payload,
+        confidence        = 1.0,
+        message           = "Beacon matched successfully",
+        event_name        = event_doc.get("name", "")          if event_doc else "",
+        event_description = event_doc.get("description", "")   if event_doc else "",
+        event_type        = event_doc.get("event_type", "")    if event_doc else "",
+        organizer_name    = event_doc.get("organizer_name", "") if event_doc else "",
+    )
 
 # ── Download beacon .wav ──────────────────────────────────────────────────────
 

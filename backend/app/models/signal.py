@@ -68,19 +68,22 @@ class SignalResponse(SignalBase):
     class Config:
         from_attributes = True
 
-
 class SignalMatchResult(BaseModel):
     """
     Returned by the matching endpoint when a beacon is detected.
     Contains everything the mobile app needs to show the confirmation card.
     """
-    matched:         bool
-    signal_id:       Optional[str]      = None
-    event_id:        Optional[str]      = None
-    beacon_payload:  Optional[str]      = None
-    confidence:      float              = 0.0   # 0.0 - 1.0
-    message:         str                = ""
-
+    matched:           bool
+    signal_id:         Optional[str]   = None
+    event_id:          Optional[str]   = None
+    beacon_payload:    Optional[str]   = None
+    confidence:        float           = 0.0
+    message:           str             = ""
+    # Event details for confirmation card
+    event_name:        Optional[str]   = None
+    event_description: Optional[str]   = None
+    event_type:        Optional[str]   = None
+    organizer_name:    Optional[str]   = None
 
 # ── Database document (stored in MongoDB) ────────────────────────────────────
 

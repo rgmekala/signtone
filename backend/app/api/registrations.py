@@ -7,8 +7,8 @@ user confirms on the phone → their profile is sent to the event organizer.
 Routes:
     POST  /registrations/              register user to an event
     GET   /registrations/              list registrations (organizer view)
-    GET   /registrations/{reg_id}      get a single registration
     GET   /registrations/user/me       get current user's registration history
+    GET   /registrations/{reg_id}      get a single registration
     POST  /registrations/sweepstake    enter a sweepstake draw
 """
 
@@ -31,21 +31,21 @@ router = APIRouter()
 # ── Request / Response schemas ────────────────────────────────────────────────
 
 class RegistrationRequest(BaseModel):
-    event_id:        str
-    beacon_payload:  str
-    profile_override: Optional[str] = None  # "public" or "professional" - user override
+    event_id:         str
+    beacon_payload:   str
+    profile_override: Optional[str] = None  # "public" or "professional"
 
 
 class RegistrationResponse(BaseModel):
-    id:              str
-    user_id:         str
-    event_id:        str
-    event_name:      str
-    event_type:      str
-    profile_type:    str
+    id:               str
+    user_id:          str
+    event_id:         str
+    event_name:       str
+    event_type:       str
+    profile_type:     str
     profile_snapshot: dict
-    registered_at:   datetime
-    message:         str = ""
+    registered_at:    datetime
+    message:          str = ""
 
 
 class SweepstakeEntryRequest(BaseModel):
@@ -65,13 +65,11 @@ async def register_to_event(
     Automatically selects the correct profile based on event type:
       - PROFESSIONAL event → sends LinkedIn profile
       - PUBLIC event       → sends public profile
-
     User can override with profile_override field.
     """
-    user = await get_current_user(authorization)
+    user    = await get_current_user(authorization)
     user_id = str(user["_id"])
 
-    # Fetch event
     try:
         event = await col_events().find_one({"_id": ObjectId(payload.event_id)})
     except Exception:
@@ -83,7 +81,6 @@ async def register_to_event(
     if event.get("status") != "active":
         raise HTTPException(status_code=400, detail="Event is not active")
 
-    # Check max registrations
     max_reg = event.get("max_registrations")
     if max_reg:
         count = await col_registrations().count_documents(
@@ -95,7 +92,6 @@ async def register_to_event(
                 detail="Event has reached maximum registrations"
             )
 
-    # Check duplicate registration
     existing = await col_registrations().find_one({
         "user_id":  user_id,
         "event_id": payload.event_id,
@@ -106,16 +102,13 @@ async def register_to_event(
             detail="You are already registered for this event"
         )
 
-    # Determine which profile to send
     event_type = event.get("event_type", EventType.PUBLIC)
 
-    # User override takes priority
     if payload.profile_override in ("public", "professional"):
         effective_type = payload.profile_override
     else:
         effective_type = event_type
 
-    # Validate LinkedIn profile exists for professional events
     if effective_type == "professional":
         prof = user.get("professional_profile")
         if not prof or not prof.get("linkedin_id"):
@@ -125,7 +118,6 @@ async def register_to_event(
                        "please connect LinkedIn in app settings"
             )
 
-    # Build profile snapshot - frozen copy at registration time
     snapshot = build_profile_snapshot(user, effective_type)
 
     now = datetime.now(timezone.utc)
@@ -142,7 +134,6 @@ async def register_to_event(
 
     result = await col_registrations().insert_one(doc)
 
-    # Increment registration count on event
     await col_events().update_one(
         {"_id": ObjectId(payload.event_id)},
         {"$inc": {"registration_count": 1}}
@@ -174,10 +165,7 @@ async def list_registrations(
     limit:    int = Query(100, le=500),
     skip:     int = Query(0),
 ):
-    """
-    List registrations - used by organizer dashboard.
-    Filter by event_id to see attendees for a specific event.
-    """
+    """List registrations - used by organizer dashboard."""
     query = {}
     if event_id:
         query["event_id"] = event_id
@@ -201,29 +189,9 @@ async def list_registrations(
     return results
 
 
-# ── Get single registration ───────────────────────────────────────────────────
-
-@router.get("/{reg_id}", response_model=RegistrationResponse)
-async def get_registration(reg_id: str):
-    """Get a single registration by ID."""
-    doc = await col_registrations().find_one({"_id": ObjectId(reg_id)})
-    if not doc:
-        raise HTTPException(status_code=404, detail="Registration not found")
-
-    event = await col_events().find_one({"_id": ObjectId(doc["event_id"])})
-    return RegistrationResponse(
-        id               = str(doc["_id"]),
-        user_id          = doc["user_id"],
-        event_id         = doc["event_id"],
-        event_name       = event["name"] if event else "Unknown",
-        event_type       = doc.get("event_type", "public"),
-        profile_type     = doc.get("profile_type", "public"),
-        profile_snapshot = doc.get("profile_snapshot", {}),
-        registered_at    = doc["registered_at"],
-    )
-
-
 # ── User's registration history ───────────────────────────────────────────────
+# IMPORTANT: this route must be defined BEFORE /{reg_id} to avoid FastAPI
+# matching "me" as a reg_id parameter.
 
 @router.get("/user/me", response_model=list[RegistrationResponse])
 async def my_registrations(
@@ -231,10 +199,7 @@ async def my_registrations(
     limit:         int = Query(50, le=200),
     skip:          int = Query(0),
 ):
-    """
-    Return the current user's full registration history.
-    Shown in the Signtone app's activity log screen.
-    """
+    """Return the current user's full registration history."""
     user    = await get_current_user(authorization)
     user_id = str(user["_id"])
 
@@ -260,6 +225,29 @@ async def my_registrations(
     return results
 
 
+# ── Get single registration ───────────────────────────────────────────────────
+# IMPORTANT: this route must be defined AFTER /user/me
+
+@router.get("/{reg_id}", response_model=RegistrationResponse)
+async def get_registration(reg_id: str):
+    """Get a single registration by ID."""
+    doc = await col_registrations().find_one({"_id": ObjectId(reg_id)})
+    if not doc:
+        raise HTTPException(status_code=404, detail="Registration not found")
+
+    event = await col_events().find_one({"_id": ObjectId(doc["event_id"])})
+    return RegistrationResponse(
+        id               = str(doc["_id"]),
+        user_id          = doc["user_id"],
+        event_id         = doc["event_id"],
+        event_name       = event["name"] if event else "Unknown",
+        event_type       = doc.get("event_type", "public"),
+        profile_type     = doc.get("profile_type", "public"),
+        profile_snapshot = doc.get("profile_snapshot", {}),
+        registered_at    = doc["registered_at"],
+    )
+
+
 # ── Sweepstake entry ──────────────────────────────────────────────────────────
 
 @router.post("/sweepstake", status_code=201)
@@ -275,7 +263,6 @@ async def enter_sweepstake(
     user    = await get_current_user(authorization)
     user_id = str(user["_id"])
 
-    # Fetch event
     event = await col_events().find_one({"_id": ObjectId(payload.event_id)})
     if not event:
         raise HTTPException(status_code=404, detail="Event not found")
@@ -286,7 +273,6 @@ async def enter_sweepstake(
             detail="Sweepstake entry only available for public events"
         )
 
-    # Check duplicate entry
     existing = await col_sweepstakes().find_one({
         "user_id":  user_id,
         "event_id": payload.event_id,
@@ -297,7 +283,6 @@ async def enter_sweepstake(
             detail="You have already entered this sweepstake"
         )
 
-    # Validate public profile is set
     pub = user.get("public_profile")
     if not pub or not pub.get("email"):
         raise HTTPException(
@@ -319,7 +304,6 @@ async def enter_sweepstake(
 
     result = await col_sweepstakes().insert_one(entry)
 
-    # Also create a registration record for history
     await col_registrations().insert_one({
         "user_id":          user_id,
         "event_id":         payload.event_id,

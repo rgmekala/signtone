@@ -18,8 +18,7 @@ enum AuthMethod { guest, google, linkedin }
 enum AuthStatus { unknown, authenticated, unauthenticated }
 
 // ─────────────────────────────────────────
-// UserProfile - single model for all 3
-// auth methods
+// UserProfile
 // ─────────────────────────────────────────
 class UserProfile {
   final String displayName;
@@ -27,8 +26,6 @@ class UserProfile {
   final String? phone;
   final String? avatarUrl;
   final AuthMethod authMethod;
-
-  // LinkedIn-only extras
   final String? headline;
   final String? linkedInId;
 
@@ -42,8 +39,6 @@ class UserProfile {
     this.linkedInId,
   });
 
-  /// Whether this profile can register for conferences
-  /// (requires Google or LinkedIn)
   bool get canRegisterForConferences =>
       authMethod == AuthMethod.google ||
       authMethod == AuthMethod.linkedin;
@@ -86,8 +81,8 @@ class AuthService extends ChangeNotifier {
   factory AuthService() => _instance;
   AuthService._internal();
 
-  final _storage  = const FlutterSecureStorage();
-  final _api      = ApiClient();
+  final _storage      = const FlutterSecureStorage();
+  final _api          = ApiClient();
   final _googleSignIn = GoogleSignIn(
     clientId: '396737061744-tniqshag7j1m8k3k9o4657ugic6244jh.apps.googleusercontent.com',
     scopes: ['email', 'profile'],
@@ -107,17 +102,15 @@ class AuthService extends ChangeNotifier {
   String?      get errorMessage => _errorMessage;
   bool get isAuthenticated      => _status == AuthStatus.authenticated;
 
-  // Convenience getters used by UI
-  String  get displayName => _profile?.displayName ?? 'User';
-  String? get avatarUrl   => _profile?.avatarUrl;
-  String? get email       => _profile?.email;
+  String  get displayName   => _profile?.displayName ?? 'User';
+  String? get avatarUrl     => _profile?.avatarUrl;
+  String? get email         => _profile?.email;
   bool get canDoConferences => _profile?.canRegisterForConferences ?? false;
 
-  // Legacy getter - keeps existing screens working
   Map<String, dynamic>? get user => _profile?.toJson();
 
   // ─────────────────────────────────────────
-  // Initialize - called once at app boot
+  // Initialize
   // ─────────────────────────────────────────
   Future<void> initialize() async {
     try {
@@ -135,7 +128,7 @@ class AuthService extends ChangeNotifier {
   }
 
   // ─────────────────────────────────────────
-  // 1. Guest login - manual entry
+  // 1. Guest login
   // ─────────────────────────────────────────
   Future<bool> loginAsGuest({
     required String displayName,
@@ -144,6 +137,16 @@ class AuthService extends ChangeNotifier {
   }) async {
     _errorMessage = null;
     try {
+      final result = await _api.guestLogin(
+        name:  displayName.trim(),
+        email: email.trim().toLowerCase(),
+        phone: phone?.trim(),
+      );
+      final token = result['access_token'] as String?;
+      if (token != null) {
+        await _api.saveToken(token);
+        debugPrint('[Auth] Guest JWT saved');
+      }
       final profile = UserProfile(
         displayName: displayName.trim(),
         email:       email.trim().toLowerCase(),
@@ -153,23 +156,49 @@ class AuthService extends ChangeNotifier {
       await _saveProfile(profile);
       return true;
     } catch (e) {
-      _errorMessage = 'Could not save profile. Please try again.';
-      notifyListeners();
-      return false;
+      debugPrint('[Auth] Guest login error: $e');
+      try {
+        final profile = UserProfile(
+          displayName: displayName.trim(),
+          email:       email.trim().toLowerCase(),
+          phone:       phone?.trim(),
+          authMethod:  AuthMethod.guest,
+        );
+        await _saveProfile(profile);
+        return true;
+      } catch (_) {
+        _errorMessage = 'Could not save profile. Please try again.';
+        notifyListeners();
+        return false;
+      }
     }
   }
 
   // ─────────────────────────────────────────
-  // 2. Google Sign-In - lightweight, local
+  // 2. Google Sign-In
   // ─────────────────────────────────────────
   Future<bool> loginWithGoogle() async {
     _errorMessage = null;
     try {
       final account = await _googleSignIn.signIn();
-      if (account == null) {
-        // User cancelled
-        return false;
+      if (account == null) return false;
+
+      // Create backend user + get JWT so registration works
+      try {
+        final result = await _api.guestLogin(
+          name:  account.displayName ?? account.email.split('@').first,
+          email: account.email,
+        );
+        final token = result['access_token'] as String?;
+        if (token != null) {
+          await _api.saveToken(token);
+          debugPrint('[Auth] Google JWT saved');
+        }
+      } catch (e) {
+        debugPrint('[Auth] Google backend login error: $e');
+        // Non-fatal - continue with local profile
       }
+
       final profile = UserProfile(
         displayName: account.displayName ?? account.email.split('@').first,
         email:       account.email,
@@ -192,12 +221,12 @@ class AuthService extends ChangeNotifier {
   }
 
   // ─────────────────────────────────────────
-  // 3. LinkedIn OAuth - full backend flow
+  // 3. LinkedIn OAuth
   // ─────────────────────────────────────────
   Future<bool> loginWithLinkedIn() async {
     _errorMessage = null;
     try {
-      final authUrl    = await _api.getLinkedInAuthUrl();
+      final authUrl     = await _api.getLinkedInAuthUrl();
       final callbackUrl = await FlutterWebAuth2.authenticate(
         url: authUrl,
         callbackUrlScheme: AppConstants.linkedInCallbackScheme,
@@ -232,7 +261,7 @@ class AuthService extends ChangeNotifier {
   }
 
   // ─────────────────────────────────────────
-  // Update profile (guest can edit details)
+  // Update profile
   // ─────────────────────────────────────────
   Future<void> updateProfile({
     String? displayName,
@@ -251,7 +280,6 @@ class AuthService extends ChangeNotifier {
     await _saveProfile(updated);
   }
 
-  // LinkedIn profile refresh from server
   Future<void> refreshProfile() async {
     if (_profile?.authMethod != AuthMethod.linkedin) return;
     try {
@@ -265,9 +293,7 @@ class AuthService extends ChangeNotifier {
         linkedInId:  raw['linkedin_id']     as String?,
       );
       await _saveProfile(updated);
-    } catch (_) {
-      // Silently fail - keep existing profile
-    }
+    } catch (_) {}
   }
 
   // ─────────────────────────────────────────
@@ -277,9 +303,7 @@ class AuthService extends ChangeNotifier {
     if (_profile?.authMethod == AuthMethod.google) {
       try { await _googleSignIn.signOut(); } catch (_) {}
     }
-    if (_profile?.authMethod == AuthMethod.linkedin) {
-      await _api.clearToken();
-    }
+    await _api.clearToken();
     await _storage.delete(key: _profileKey);
     _profile      = null;
     _errorMessage = null;

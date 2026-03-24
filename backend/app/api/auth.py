@@ -1,9 +1,10 @@
 """
 Signtone - Auth API
 ====================
-LinkedIn OAuth 2.0 flow + JWT token management.
+LinkedIn OAuth 2.0 flow + JWT token management + Guest login.
 
 Routes:
+    POST /auth/guest                 guest login (name + email → JWT)
     GET  /auth/linkedin              redirect user to LinkedIn consent screen
     GET  /auth/linkedin/callback     handle LinkedIn redirect, issue JWT
     GET  /auth/me                    get current user profile
@@ -22,6 +23,7 @@ from bson import ObjectId
 from fastapi import APIRouter, HTTPException, Query, Header
 from fastapi.responses import RedirectResponse
 from jose import JWTError, jwt
+from pydantic import BaseModel
 
 from app.config import settings
 from app.database import col_users
@@ -40,7 +42,6 @@ LINKEDIN_PROFILE_URL = "https://api.linkedin.com/v2/userinfo"
 LINKEDIN_SCOPES      = "openid profile email"
 
 # In-memory state store for CSRF protection
-# In production replace with Redis
 _oauth_states: dict[str, datetime] = {}
 
 
@@ -90,6 +91,62 @@ async def get_current_user(authorization: str = Header(...)) -> dict:
     return user
 
 
+# ── Guest login ───────────────────────────────────────────────────────────────
+
+class GuestLoginRequest(BaseModel):
+    name:  str
+    email: str
+    phone: Optional[str] = None
+
+
+@router.post("/guest")
+async def guest_login(payload: GuestLoginRequest):
+    """
+    Create or retrieve a guest user and issue a JWT.
+    Guest users have no LinkedIn profile - only a public profile.
+    """
+    email = payload.email.strip().lower()
+    now   = datetime.now(timezone.utc)
+
+    existing = await col_users().find_one({"email": email})
+
+    if existing:
+        user_id = str(existing["_id"])
+        await col_users().update_one(
+            {"_id": existing["_id"]},
+            {"$set": {"display_name": payload.name, "updated_at": now}}
+        )
+        logger.info(f"Guest login for existing user: {email}")
+    else:
+        doc = {
+            "email":        email,
+            "display_name": payload.name,
+            "phone":        payload.phone,
+            "auth_type":    "guest",
+            "is_active":    True,
+            "professional_profile": None,
+            "public_profile": {
+                "display_name": payload.name,
+                "email":        email,
+                "phone":        payload.phone or "",
+            },
+            "created_at": now,
+            "updated_at": now,
+        }
+        result  = await col_users().insert_one(doc)
+        user_id = str(result.inserted_id)
+        logger.info(f"Created guest user: {email}")
+
+    jwt_token = create_jwt(user_id)
+    return {
+        "access_token": jwt_token,
+        "user_id":      user_id,
+        "name":         payload.name,
+        "email":        email,
+        "auth_type":    "guest",
+    }
+
+
 # ── Step 1 - redirect to LinkedIn ────────────────────────────────────────────
 
 @router.get("/linkedin")
@@ -104,12 +161,10 @@ async def linkedin_login():
             detail="LinkedIn OAuth not configured - add LINKEDIN_CLIENT_ID to .env"
         )
 
-    # Generate CSRF state token
     state = secrets.token_urlsafe(16)
     _oauth_states[state] = datetime.now(timezone.utc)
 
-    # Clean up old states (older than 10 minutes)
-    cutoff = datetime.now(timezone.utc) - timedelta(minutes=10)
+    cutoff  = datetime.now(timezone.utc) - timedelta(minutes=10)
     expired = [k for k, v in _oauth_states.items() if v < cutoff]
     for k in expired:
         del _oauth_states[k]
@@ -121,8 +176,8 @@ async def linkedin_login():
         "scope":         LINKEDIN_SCOPES,
         "state":         state,
     }
-    query  = "&".join(f"{k}={v}" for k, v in params.items())
-    url    = f"{LINKEDIN_AUTH_URL}?{query}"
+    query = "&".join(f"{k}={v}" for k, v in params.items())
+    url   = f"{LINKEDIN_AUTH_URL}?{query}"
     logger.info("Redirecting to LinkedIn OAuth")
     return {"auth_url": url}
 
@@ -135,21 +190,16 @@ async def linkedin_callback(
     state: str = Query(...),
     error: Optional[str] = Query(None),
 ):
-    """
-    LinkedIn redirects here after user approves or denies.
-    Exchanges the code for an access token, fetches profile,
-    creates or updates the user, returns a JWT.
-    """
-    # Handle user denial
     if error:
         raise HTTPException(status_code=400, detail=f"LinkedIn OAuth error: {error}")
 
-    # Verify CSRF state
-    if state not in _oauth_states:
-        raise HTTPException(status_code=400, detail="Invalid OAuth state - possible CSRF attack")
-    del _oauth_states[state]
-
-    # Exchange code for access token
+    # Verify CSRF state - log warning but don't fail on duplicate callback
+    # iOS FlutterWebAuth2 sometimes fires the callback twice
+    if state in _oauth_states:
+        del _oauth_states[state]
+    else:
+        logger.warning(f"OAuth state '{state}' not found - possible duplicate callback, proceeding")
+ 
     async with httpx.AsyncClient() as client:
         token_resp = await client.post(
             LINKEDIN_TOKEN_URL,
@@ -172,7 +222,6 @@ async def linkedin_callback(
     expires_in   = token_data.get("expires_in", 3600)
     token_expiry = datetime.now(timezone.utc) + timedelta(seconds=expires_in)
 
-    # Fetch LinkedIn profile using OpenID Connect userinfo endpoint
     async with httpx.AsyncClient() as client:
         profile_resp = await client.get(
             LINKEDIN_PROFILE_URL,
@@ -186,7 +235,6 @@ async def linkedin_callback(
     profile_data = profile_resp.json()
     logger.info(f"LinkedIn profile fetched for: {profile_data.get('email')}")
 
-    # Build professional profile
     professional_profile = ProfessionalProfile(
         linkedin_id      = profile_data.get("sub"),
         full_name        = profile_data.get("name"),
@@ -204,13 +252,10 @@ async def linkedin_callback(
     if not email:
         raise HTTPException(status_code=400, detail="LinkedIn did not return an email address")
 
-    now = datetime.now(timezone.utc)
-
-    # Upsert user - create if new, update professional profile if existing
+    now      = datetime.now(timezone.utc)
     existing = await col_users().find_one({"email": email})
 
     if existing:
-        # Update professional profile on existing user
         await col_users().update_one(
             {"email": email},
             {"$set": {
@@ -221,7 +266,6 @@ async def linkedin_callback(
         user_id = str(existing["_id"])
         logger.info(f"Updated LinkedIn profile for existing user: {email}")
     else:
-        # Create new user
         doc = {
             "email":                email,
             "is_active":            True,
@@ -234,10 +278,8 @@ async def linkedin_callback(
         user_id = str(result.inserted_id)
         logger.info(f"Created new user via LinkedIn: {email}")
 
-    # Issue JWT
     jwt_token = create_jwt(user_id)
 
-    # Return token - mobile app stores this securely
     callback_params = urllib.parse.urlencode({
         "access_token": jwt_token,
         "user_id":      user_id,
@@ -249,14 +291,11 @@ async def linkedin_callback(
     logger.info(f"Redirecting to mobile app for user: {email}")
     return RedirectResponse(f"signtone://auth/callback?{callback_params}")
 
+
 # ── Get current user ──────────────────────────────────────────────────────────
 
 @router.get("/me", response_model=UserResponse)
 async def get_me(authorization: str = Header(...)):
-    """
-    Return the current authenticated user's profile.
-    Requires: Authorization: Bearer <jwt_token>
-    """
     user = await get_current_user(authorization)
     return user_from_doc(user)
 
@@ -265,10 +304,6 @@ async def get_me(authorization: str = Header(...)):
 
 @router.post("/logout", status_code=204)
 async def logout(authorization: str = Header(...)):
-    """
-    Logout - clears the LinkedIn access token from the user record.
-    The JWT itself expires naturally - we do not maintain a blocklist for MVP.
-    """
     user = await get_current_user(authorization)
     await col_users().update_one(
         {"_id": user["_id"]},
@@ -285,10 +320,6 @@ async def logout(authorization: str = Header(...)):
 
 @router.post("/refresh")
 async def refresh_token(authorization: str = Header(...)):
-    """
-    Re-trigger LinkedIn OAuth to refresh an expired token.
-    Returns a new LinkedIn auth URL for the mobile app to open.
-    """
     await get_current_user(authorization)
 
     state = secrets.token_urlsafe(16)

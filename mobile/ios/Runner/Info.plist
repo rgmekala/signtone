@@ -7,7 +7,7 @@
 	<key>CFBundleDevelopmentRegion</key>
 	<string>$(DEVELOPMENT_LANGUAGE)</string>
 	<key>CFBundleDisplayName</key>
-	<string>Mobile</string>
+	<string>Signtone</string>
 	<key>CFBundleExecutable</key>
 	<string>$(EXECUTABLE_NAME)</string>
 	<key>CFBundleIdentifier</key>
@@ -15,7 +15,7 @@
 	<key>CFBundleInfoDictionaryVersion</key>
 	<string>6.0</string>
 	<key>CFBundleName</key>
-	<string>mobile</string>
+	<string>Signtone</string>
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>
@@ -45,6 +45,13 @@
 	<true/>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>Signtone listens for ultrasonic audio signals to register you at events automatically.</string>
+	<key>NSSiriUsageDescription</key>
+	<string>Signtone uses Siri to suggest event registration when a beacon is detected nearby.</string>
+	<key>NSUserActivityTypes</key>
+	<array>
+		<string>RegisterForEventIntent</string>
+		<string>com.signtone.mobile.register</string>
+	</array>
 	<key>UIApplicationSceneManifest</key>
 	<dict>
 		<key>UIApplicationSupportsMultipleScenes</key>
