@@ -19,45 +19,52 @@ class SignalStatus(str, Enum):
 
 
 class SignalType(str, Enum):
-    BEACON      = "beacon"       # ultrasonic BFSK beacon (primary)
-    FINGERPRINT = "fingerprint"  # audio fingerprint match (future v2)
+    BEACON      = "beacon"
+    FINGERPRINT = "fingerprint"
 
 
 # ── Base ──────────────────────────────────────────────────────────────────────
 
 class SignalBase(BaseModel):
-    event_id:        str
-    beacon_payload:  str = Field(
-        ...,
-        min_length=1,
-        max_length=32,
-        description="Short ASCII string encoded into the ultrasonic beacon"
+    event_id:           str
+    beacon_payload:     str = Field(
+        ..., min_length=1, max_length=32,
+        description="Short ASCII string encoded into the beacon"
     )
-    signal_type:     SignalType = SignalType.BEACON
-    status:          SignalStatus = SignalStatus.ACTIVE
-    valid_from:      datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
-    expires_at:      Optional[datetime] = None
-    description:     Optional[str] = None
+    signal_type:        SignalType   = SignalType.BEACON
+    status:             SignalStatus = SignalStatus.ACTIVE
+    valid_from:         datetime     = Field(default_factory=lambda: datetime.now(timezone.utc))
+    expires_at:         Optional[datetime] = None
+    description:        Optional[str]      = None
+
+    # ── New fields ─────────────────────────────────────────────────────────
+    frequency_profile:  Optional[str] = Field(
+        default="ultrasonic",
+        description="'ultrasonic' (15-17 kHz, ~30m) or 'audible' (4-6 kHz, ~300m)"
+    )
+    chime_style:        Optional[str] = Field(
+        default="none",
+        description="Branded chime: 'none' | 'marimba' | 'bell' | 'modern'"
+    )
 
 
-# ── Request schemas (API input) ───────────────────────────────────────────────
+# ── Request schemas ───────────────────────────────────────────────────────────
 
 class SignalCreate(SignalBase):
-    """
-    Sent by organizer when creating a new beacon signal.
-    beacon_payload must be unique across all active signals.
-    """
+    """Sent by organizer when creating a new beacon signal."""
     pass
 
 
 class SignalUpdate(BaseModel):
     """Partial update - all fields optional."""
-    status:      Optional[SignalStatus] = None
-    expires_at:  Optional[datetime]    = None
-    description: Optional[str]         = None
+    status:             Optional[SignalStatus] = None
+    expires_at:         Optional[datetime]     = None
+    description:        Optional[str]          = None
+    frequency_profile:  Optional[str]          = None
+    chime_style:        Optional[str]          = None
 
 
-# ── Response schemas (API output) ─────────────────────────────────────────────
+# ── Response schemas ──────────────────────────────────────────────────────────
 
 class SignalResponse(SignalBase):
     """Returned to the client after create or fetch."""
@@ -68,33 +75,30 @@ class SignalResponse(SignalBase):
     class Config:
         from_attributes = True
 
+
 class SignalMatchResult(BaseModel):
     """
-    Returned by the matching endpoint when a beacon is detected.
-    Contains everything the mobile app needs to show the confirmation card.
+    Returned by /signals/match.
+    Contains everything the mobile app needs for the confirmation card.
     """
     matched:           bool
-    signal_id:         Optional[str]   = None
-    event_id:          Optional[str]   = None
-    beacon_payload:    Optional[str]   = None
-    confidence:        float           = 0.0
-    message:           str             = ""
-    # Event details for confirmation card
-    event_name:        Optional[str]   = None
-    event_description: Optional[str]   = None
-    event_type:        Optional[str]   = None
-    organizer_name:    Optional[str]   = None
+    signal_id:         Optional[str] = None
+    event_id:          Optional[str] = None
+    beacon_payload:    Optional[str] = None
+    confidence:        float         = 0.0
+    message:           str           = ""
+    event_name:        Optional[str] = None
+    event_description: Optional[str] = None
+    event_type:        Optional[str] = None
+    organizer_name:    Optional[str] = None
 
-# ── Database document (stored in MongoDB) ────────────────────────────────────
+
+# ── Database document ─────────────────────────────────────────────────────────
 
 class SignalDocument(SignalBase):
-    """
-    Full document as stored in MongoDB.
-    _id is stored as string (converted from ObjectId on read).
-    """
-    id:         Optional[str]      = Field(default=None, alias="_id")
-    created_at: datetime           = Field(default_factory=lambda: datetime.now(timezone.utc))
-    updated_at: datetime           = Field(default_factory=lambda: datetime.now(timezone.utc))
+    id:         Optional[str] = Field(default=None, alias="_id")
+    created_at: datetime      = Field(default_factory=lambda: datetime.now(timezone.utc))
+    updated_at: datetime      = Field(default_factory=lambda: datetime.now(timezone.utc))
 
     class Config:
         populate_by_name = True
@@ -105,4 +109,7 @@ class SignalDocument(SignalBase):
 def signal_from_doc(doc: dict) -> SignalResponse:
     """Convert a raw MongoDB document to a SignalResponse."""
     doc["id"] = str(doc.pop("_id"))
+    # Fill defaults for older docs that predate these fields
+    doc.setdefault("frequency_profile", "ultrasonic")
+    doc.setdefault("chime_style", "none")
     return SignalResponse(**doc)
