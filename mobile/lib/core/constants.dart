@@ -23,9 +23,6 @@ class AppConstants {
   // ─────────────────────────────────────────
   // LinkedIn OAuth
   // ─────────────────────────────────────────
-  // The backend handles the OAuth flow.
-  // The app only needs to know the custom URL scheme
-  // that LinkedIn redirects back to after login.
   static const String linkedInCallbackScheme = 'signtone';
   static const String linkedInCallbackUrl    = 'signtone://auth/callback';
 
@@ -36,17 +33,30 @@ class AppConstants {
   /// How long (ms) each audio chunk is before being sent for matching.
   static const int audioChunkDurationMs = 80;
 
-  /// Minimum signal strength to attempt a match (avoids noise triggers).
+  /// Minimum signal strength to attempt a match.
   static const double signalThresholdDb = -60.0;
 
   /// Sample rate expected by the backend beacon decoder.
   static const int sampleRateHz = 44100;
 
-  /// BFSK frequency band used by Signtone beacons (18-20 kHz).
-  /// Must match beacon_service.py on the backend.
-  static const double beaconFreqSync = 15000.0; // Hz - sync/preamble tone (NEW)
-  static const double beaconFreqLow  = 16000.0; // Hz - bit 0  (was 18000)
-  static const double beaconFreqHigh = 17000.0; // Hz - bit 1  (was 19000)
+  // ── Ultrasonic profile (15-17 kHz) ───────────────────────────────────────
+  // Inaudible, short range (~30m), for quiet/small venues
+  static const double beaconFreqSync      = 15000.0;
+  static const double beaconFreqLow       = 16000.0;
+  static const double beaconFreqHigh      = 17000.0;
+
+  // ── Audible profile (C major - 262/330/392 Hz) ───────────────────────────
+  // Soft whistle tone, long range (~300m), for large venues
+  // Sounds: pleasant, minimal, purposeful
+  static const double beaconAudibleSync   = 262.0;   // C4
+  static const double beaconAudibleLow    = 330.0;   // E4
+  static const double beaconAudibleHigh   = 392.0;   // G4
+
+  // ── Bandpass ranges ───────────────────────────────────────────────────────
+  static const double bandpassUltrasonicLow  = 13500.0;
+  static const double bandpassUltrasonicHigh = 17500.0;
+  static const double bandpassAudibleLow     = 200.0;
+  static const double bandpassAudibleHigh    = 500.0;
 
   // ─────────────────────────────────────────
   // Profile types
@@ -63,21 +73,17 @@ class AppConstants {
   // ─────────────────────────────────────────
   // UI timing
   // ─────────────────────────────────────────
-
-  /// How long the confirmation card stays visible before auto-dismissing.
   static const int confirmationAutoDismissSec = 30;
-
-  /// Splash screen display duration before routing to home.
-  static const int splashDurationMs = 2000;
+  static const int splashDurationMs           = 2000;
 
   // ─────────────────────────────────────────
-  // Route names  (used by router.dart)
+  // Route names
   // ─────────────────────────────────────────
-  static const String routeSplash       = '/';
-  static const String routeLogin        = '/login';
-  static const String routeHome         = '/home';
-  static const String routeConfirm      = '/confirm';
-  static const String routeHistory      = '/history';
-  static const String routeProfile      = '/profile';
-  static const String routeEditProfile  = '/profile/edit';
+  static const String routeSplash      = '/';
+  static const String routeLogin       = '/login';
+  static const String routeHome        = '/home';
+  static const String routeConfirm     = '/confirm';
+  static const String routeHistory     = '/history';
+  static const String routeProfile     = '/profile';
+  static const String routeEditProfile = '/profile/edit';
 }

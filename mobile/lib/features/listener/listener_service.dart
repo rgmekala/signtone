@@ -31,7 +31,7 @@ class ListenerService extends ChangeNotifier {
   // Window must be > beacon duration (5.92s for EVT001)
   // Step = how often we send to backend
   static const _windowMs = 8000;
-  static const _stepMs   = 2000;
+  static const _stepMs   = 1000;
 
   int get _windowSamples => (AppConstants.sampleRateHz * _windowMs / 1000).round();
   int get _stepSamples   => (AppConstants.sampleRateHz * _stepMs   / 1000).round();
@@ -188,7 +188,7 @@ class ListenerService extends ChangeNotifier {
     // Skip quiet windows
     final rms = _rmsEnergy(_collectBuffer);
     debugPrint('[Listener] window rms: $rms (${_collectBuffer.length} samples)');
-    if (rms < 0.0005) {
+    if (rms < 0.000005) {
       debugPrint('[Listener] window too quiet, skipping');
       return;
     }

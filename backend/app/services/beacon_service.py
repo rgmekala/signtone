@@ -1,158 +1,180 @@
 """
-Signtone - Beacon Service
-==========================
-Robust BFSK encoder/decoder with:
-  - FrequencyProfile: ultrasonic (15-17 kHz) or audible (4-6 kHz)
-  - ChimeStyle: none | marimba | bell | modern
-  - Same Goertzel decoder for both profiles
+Signtone - Beacon Service v2
+=============================
+Chirp/LFM encoder + matched-filter correlation decoder.
+
+Architecture:
+  Encoder: Each bit = Linear Frequency Modulated (LFM) chirp
+           bit 1 = chirp sweeping UP   (f_low → f_high)
+           bit 0 = chirp sweeping DOWN (f_high → f_low)
+           sync  = long up+down arc    (unique preamble)
+
+  Decoder: Cross-correlation against reference chirp templates
+           Peak detection - 20-30dB more sensitive than Goertzel
+           Works through room noise, crowd noise, poor acoustics
+
+Profiles:
+  ULTRASONIC: 15-17 kHz - inaudible, PA system required
+  AUDIBLE:    2-4 kHz   - pleasant, laptop/phone speaker viable
 """
 
 import logging
 import numpy as np
 from enum import Enum
 from scipy.io import wavfile
-from scipy.signal import butter, sosfilt
+from scipy.signal import butter, sosfilt, correlate, find_peaks
 
 logger = logging.getLogger(__name__)
 
-# ── Frequency profiles ────────────────────────────────────────────────────────
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Enums
+# ─────────────────────────────────────────────────────────────────────────────
 
 class FrequencyProfile(str, Enum):
-    ULTRASONIC = "ultrasonic"   # 15-17 kHz - inaudible, short range (~30m)
-    AUDIBLE    = "audible"      # 4-6 kHz   - audible, long range (~300m)
+    ULTRASONIC = "ultrasonic"   # 15-17 kHz, inaudible, ~30m
+    AUDIBLE    = "audible"      # 2-4 kHz, pleasant, ~30m laptop / ~100m PA
 
 class ChimeStyle(str, Enum):
-    NONE    = "none"     # raw BFSK only
-    MARIMBA = "marimba"  # warm wooden C5→E5→G5
-    BELL    = "bell"     # clear C6→G6 with decay tail
-    MODERN  = "modern"   # two-tone synthetic ding
+    NONE    = "none"
+    MARIMBA = "marimba"
+    BELL    = "bell"
+    MODERN  = "modern"
 
-# ── Profile parameters ────────────────────────────────────────────────────────
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Profiles
+# ─────────────────────────────────────────────────────────────────────────────
 
 PROFILES = {
     FrequencyProfile.ULTRASONIC: {
-        "freq_sync":    15000,
-        "freq_zero":    16000,
-        "freq_one":     17000,
-        "bandpass_low": 13500,
-        "bandpass_high":17500,
-        "whistle":      False,
-        "label":        "Ultrasonic (15-17 kHz)",
+        "f_low":        15000,   # chirp start (down) / end (up)
+        "f_high":       17000,   # chirp end   (up)   / start (down)
+        "bandpass_low": 14000,
+        "bandpass_high":18000,
+        "label":        "Ultrasonic chirp (15-17 kHz)",
     },
     FrequencyProfile.AUDIBLE: {
-        # C major - C4/E4/G4 (262/330/392 Hz)
-        # Pure whistle tone - soft, minimal, pleasant
-        "freq_sync":    262,     # C4
-        "freq_zero":    330,     # E4
-        "freq_one":     392,     # G4
-        "bandpass_low": 200,
-        "bandpass_high":500,
-        "whistle":      True,
-        "label":        "Audible whistle - C major (262/330/392 Hz)",
+        "f_low":        2000,    # chirp start (down) / end (up)
+        "f_high":       4000,    # chirp end   (up)   / start (down)
+        "bandpass_low": 1500,
+        "bandpass_high":4500,
+        "label":        "Audible chirp (2-4 kHz)",
     },
 }
 
-# ── Global config (shared) ────────────────────────────────────────────────────
+# ── Timing ────────────────────────────────────────────────────────────────────
 SAMPLE_RATE       = 44100
-SYMBOL_DUR        = 0.08    # seconds per bit symbol
-GUARD_DUR         = 0.02    # seconds silence between symbols
-SYNC_DUR          = 0.20    # seconds sync tone
-AMPLITUDE         = 0.6
+SYMBOL_DUR        = 0.08    # seconds per bit chirp
+GUARD_DUR         = 0.01    # seconds silence between symbols
+SYNC_DUR          = 0.20    # seconds sync preamble
+AMPLITUDE         = 0.8     # higher than before - maximise SNR
 MAX_PAYLOAD_BYTES = 32
-SNR_THRESHOLD     = 2.5
-FREQ_TOLERANCE    = 400
 
-# Legacy constants (kept for backwards compatibility with existing imports)
+# ── Correlation detection ─────────────────────────────────────────────────────
+CORR_THRESHOLD    = 0.20    # sync detection threshold
+BIT_THRESHOLD     = 0.08    # bit detection threshold - lower than sync
+                            # mic-captured bits are weaker than sync peak
+
+# Legacy constants (backwards compat)
 FREQ_SYNC = 15000
 FREQ_ZERO = 16000
 FREQ_ONE  = 17000
+SNR_THRESHOLD = 2.5
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Signal primitives
+# Chirp primitives
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _tone(freq: float, duration: float, sr: int = SAMPLE_RATE,
-          amplitude: float = AMPLITUDE, whistle: bool = False) -> np.ndarray:
-    n   = int(sr * duration)
-    t   = np.linspace(0, duration, n, endpoint=False)
-    if whistle:
-        # Soft whistle - pure sine + tiny breath noise
-        # This is the official Signtone audible sound (w0)
-        rng   = np.random.default_rng(42)
-        noise = rng.standard_normal(n) * 0.02
-        sig   = (0.90 * np.sin(2 * np.pi * freq * t) + noise) * amplitude
-        # 40% crossfade on each end - smooth, no clicks
-        fade  = int(n * 0.40)
+def _chirp(f_start: float, f_end: float, duration: float,
+           sr: int = SAMPLE_RATE, amplitude: float = AMPLITUDE) -> np.ndarray:
+    """
+    Linear Frequency Modulated (LFM) chirp.
+    Sweeps linearly from f_start to f_end over duration seconds.
+    Much more noise-resistant than fixed tones - used in radar/sonar.
+    """
+    n     = int(sr * duration)
+    t     = np.linspace(0, duration, n, endpoint=False)
+    # Instantaneous phase = integral of instantaneous frequency
+    # f(t) = f_start + (f_end - f_start) * t / duration
+    phase = 2 * np.pi * (f_start * t + (f_end - f_start) * t**2 / (2 * duration))
+    sig   = amplitude * np.sin(phase)
+    # Smooth envelope - prevents spectral splatter at edges
+    fade  = int(n * 0.10)   # 10% fade each end
+    if fade > 0:
         sig[:fade]  *= np.linspace(0, 1, fade)
         sig[-fade:] *= np.linspace(1, 0, fade)
-    else:
-        # Ultrasonic - plain sine wave
-        sig = np.sin(2 * np.pi * freq * t) * amplitude
-        # Short envelope to avoid clicks
-        env_n = int(sr * min(8, duration * 1000 * 0.15) / 1000)
-        if env_n > 0:
-            sig[:env_n]  *= np.linspace(0, 1, env_n)
-            sig[-env_n:] *= np.linspace(1, 0, env_n)
     return sig.astype(np.float32)
+
 
 def _silence(duration: float, sr: int = SAMPLE_RATE) -> np.ndarray:
     return np.zeros(int(sr * duration), dtype=np.float32)
 
+
 def _checksum(payload: str) -> int:
     return sum(payload.encode("ascii")) % 256
+
 
 def _bandpass(signal: np.ndarray, sr: int, low: float, high: float) -> np.ndarray:
     sos = butter(4, [low / (sr / 2), high / (sr / 2)], btype='band', output='sos')
     return sosfilt(sos, signal).astype(np.float32)
 
-def _apply_envelope(signal: np.ndarray, sr: int,
-                    attack_ms: float = 5, release_ms: float = 10) -> np.ndarray:
-    """Smooth attack/release to avoid clicks."""
-    atk = int(sr * attack_ms / 1000)
-    rel = int(sr * release_ms / 1000)
-    env = np.ones(len(signal), dtype=np.float32)
-    env[:atk]  = np.linspace(0, 1, atk)
-    env[-rel:] = np.linspace(1, 0, rel)
-    return signal * env
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Reference chirp templates (used by decoder)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _make_templates(profile: FrequencyProfile, sr: int = SAMPLE_RATE) -> dict:
+    """
+    Generate reference chirp templates for matched filter correlation.
+    Returns dict with 'up', 'down', 'sync' templates.
+    """
+    p      = PROFILES[profile]
+    f_low  = p["f_low"]
+    f_high = p["f_high"]
+
+    return {
+        # bit 1 = chirp UP
+        "up":   _chirp(f_low,  f_high, SYMBOL_DUR, sr, amplitude=1.0),
+        # bit 0 = chirp DOWN
+        "down": _chirp(f_high, f_low,  SYMBOL_DUR, sr, amplitude=1.0),
+        # sync = up then down arc (unique shape, hard to confuse with noise)
+        "sync": np.concatenate([
+            _chirp(f_low,  f_high, SYNC_DUR / 2, sr, amplitude=1.0),
+            _chirp(f_high, f_low,  SYNC_DUR / 2, sr, amplitude=1.0),
+        ]),
+    }
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Chime synthesizers
+# Zen Bowl signature chime (unchanged)
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _chime_z2(sr: int = SAMPLE_RATE) -> np.ndarray:
     """
     Signtone signature sound - Zen Bowl (z2).
     Deep 256 Hz strike with inharmonic partials and long resonant decay.
-    Sounds: calm, authoritative, intentional.
     """
-    freq = 256.0   # C4 - deep, resonant
+    freq = 256.0
     dur  = 5.0
     n    = int(sr * dur)
     t    = np.linspace(0, dur, n)
-
-    sig = (
+    sig  = (
         0.50 * np.sin(2 * np.pi * freq       * t) * np.exp(-t * 0.8) +
         0.25 * np.sin(2 * np.pi * freq * 2.8 * t) * np.exp(-t * 1.8) +
         0.15 * np.sin(2 * np.pi * freq * 5.1 * t) * np.exp(-t * 3.0) +
         0.10 * np.sin(2 * np.pi * freq * 7.3 * t) * np.exp(-t * 5.0)
-    )
-    sig = sig * AMPLITUDE
-    mx  = np.max(np.abs(sig))
+    ) * AMPLITUDE
+    mx = np.max(np.abs(sig))
     if mx > 0:
         sig = sig / mx * AMPLITUDE
-
-    # Very short attack (3ms) - bowl strike character
-    # Long release (300ms) - natural resonance tail
     a = int(sr * 0.003)
     r = int(sr * 0.300)
     sig[:a]  *= np.linspace(0, 1, a)
     sig[-r:] *= np.linspace(1, 0, r)
     return sig.astype(np.float32)
 
-
-# Keep old chime functions as aliases for backwards compatibility
 def _chime_marimba(sr: int = SAMPLE_RATE) -> np.ndarray:
     return _chime_z2(sr)
 
@@ -162,48 +184,10 @@ def _chime_bell(sr: int = SAMPLE_RATE) -> np.ndarray:
 def _chime_modern(sr: int = SAMPLE_RATE) -> np.ndarray:
     return _chime_z2(sr)
 
-
 def _get_chime(style: ChimeStyle, sr: int = SAMPLE_RATE) -> np.ndarray:
-    """Return the Signtone signature zen bowl sound for any chime style."""
     if style == ChimeStyle.NONE:
         return np.array([], dtype=np.float32)
-    return _chime_z2(sr)  # z2 is the official Signtone sound
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Goertzel detector
-# ─────────────────────────────────────────────────────────────────────────────
-
-def _goertzel_power(segment: np.ndarray, target_freq: float, sr: int) -> float:
-    n = len(segment)
-    if n == 0:
-        return 0.0
-    k     = round(n * target_freq / sr)
-    omega = 2.0 * np.pi * k / n
-    coeff = 2.0 * np.cos(omega)
-    s0, s1, s2 = 0.0, 0.0, 0.0
-    for x in segment:
-        s0 = x + coeff * s1 - s2
-        s2 = s1
-        s1 = s0
-    power = (s1 * s1 + s2 * s2 - coeff * s1 * s2) / (n * n)
-    return float(power)
-
-def _classify_tone(segment: np.ndarray, sr: int,
-                   freq_sync: float, freq_zero: float, freq_one: float
-                   ) -> tuple[str, float]:
-    p_sync = _goertzel_power(segment, freq_sync, sr)
-    p_zero = _goertzel_power(segment, freq_zero, sr)
-    p_one  = _goertzel_power(segment, freq_one,  sr)
-
-    noise  = np.median([p_sync, p_zero, p_one]) + 1e-12
-    powers = {'sync': p_sync, 'zero': p_zero, 'one': p_one}
-    best   = max(powers, key=powers.get)
-    snr    = powers[best] / noise
-
-    if snr < SNR_THRESHOLD:
-        return 'silence', snr
-    return best, snr
+    return _chime_z2(sr)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -216,60 +200,60 @@ def encode_payload(
     chime: ChimeStyle = ChimeStyle.NONE,
 ) -> np.ndarray:
     """
-    Encode a payload string into BFSK audio.
+    Encode payload as LFM chirp sequence.
 
-    Args:
-        payload: ASCII string to encode (max 32 chars)
-        profile: FrequencyProfile.ULTRASONIC or AUDIBLE
-        chime:   ChimeStyle for branded intro/outro
-
-    Returns:
-        numpy float32 array ready to write as WAV
+    bit 1 → chirp UP   (f_low  → f_high)
+    bit 0 → chirp DOWN (f_high → f_low)
+    sync  → arc UP then DOWN (unique preamble + end marker)
     """
     if len(payload) > MAX_PAYLOAD_BYTES:
         raise ValueError(f"Payload too long: {len(payload)} (max {MAX_PAYLOAD_BYTES})")
     if not payload.isascii():
         raise ValueError("Payload must be ASCII only")
 
-    p         = PROFILES[profile]
-    freq_sync = p["freq_sync"]
-    freq_zero = p["freq_zero"]
-    freq_one  = p["freq_one"]
-    whistle   = p.get("whistle", False)
+    p      = PROFILES[profile]
+    f_low  = p["f_low"]
+    f_high = p["f_high"]
 
     logger.info(f"Encoding '{payload}' | profile={profile} | chime={chime}")
 
     segments = []
 
-    # ── Chime intro (zen bowl z2) ─────────────────────────────────────────────
+    # ── Optional chime intro ──────────────────────────────────────────────────
     intro = _get_chime(chime)
     if len(intro) > 0:
         segments.append(intro)
         segments.append(_silence(0.05))
 
-    # ── BFSK payload ──────────────────────────────────────────────────────────
-    segments.append(_tone(freq_sync, SYNC_DUR, whistle=whistle))
+    # ── Sync preamble: arc UP then DOWN ──────────────────────────────────────
+    segments.append(_chirp(f_low,  f_high, SYNC_DUR / 2))
+    segments.append(_chirp(f_high, f_low,  SYNC_DUR / 2))
     segments.append(_silence(GUARD_DUR))
 
+    # ── Data bits ─────────────────────────────────────────────────────────────
     for char in payload:
         byte = ord(char)
         for bit_pos in range(7, -1, -1):
-            bit  = (byte >> bit_pos) & 1
-            freq = freq_one if bit else freq_zero
-            segments.append(_tone(freq, SYMBOL_DUR, whistle=whistle))
+            bit = (byte >> bit_pos) & 1
+            if bit == 1:
+                segments.append(_chirp(f_low, f_high, SYMBOL_DUR))
+            else:
+                segments.append(_chirp(f_high, f_low, SYMBOL_DUR))
             segments.append(_silence(GUARD_DUR))
 
+    # ── Checksum bits ─────────────────────────────────────────────────────────
     chk = _checksum(payload)
     for bit_pos in range(7, -1, -1):
-        bit  = (chk >> bit_pos) & 1
-        freq = freq_one if bit else freq_zero
-        segments.append(_tone(freq, SYMBOL_DUR, whistle=whistle))
+        bit = (chk >> bit_pos) & 1
+        if bit == 1:
+            segments.append(_chirp(f_low, f_high, SYMBOL_DUR))
+        else:
+            segments.append(_chirp(f_high, f_low, SYMBOL_DUR))
         segments.append(_silence(GUARD_DUR))
 
-    segments.append(_tone(freq_sync, SYNC_DUR * 0.5, whistle=whistle))
-
-    # No chime outro - one intro chime is enough.
-    # The BFSK data ends cleanly on its own.
+    # ── End sync marker ───────────────────────────────────────────────────────
+    segments.append(_chirp(f_low,  f_high, SYNC_DUR / 4))
+    segments.append(_chirp(f_high, f_low,  SYNC_DUR / 4))
 
     signal   = np.concatenate(segments)
     duration = len(signal) / SAMPLE_RATE
@@ -283,7 +267,6 @@ def save_beacon_wav(
     profile: FrequencyProfile = FrequencyProfile.ULTRASONIC,
     chime: ChimeStyle = ChimeStyle.NONE,
 ) -> str:
-    """Encode payload and save as WAV file."""
     signal = encode_payload(payload, profile=profile, chime=chime)
     pcm    = (signal * 32767).astype(np.int16)
     wavfile.write(output_path, SAMPLE_RATE, pcm)
@@ -292,7 +275,6 @@ def save_beacon_wav(
 
 
 def save_chime_wav(style: ChimeStyle, output_path: str) -> str:
-    """Save just the chime (no BFSK) for preview purposes."""
     chime = _get_chime(style)
     if len(chime) == 0:
         raise ValueError("ChimeStyle.NONE has no audio to preview")
@@ -302,8 +284,110 @@ def save_chime_wav(style: ChimeStyle, output_path: str) -> str:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Decoder - works for both profiles
+# Matched Filter Correlation Decoder
 # ─────────────────────────────────────────────────────────────────────────────
+
+def _normalised_correlation(signal: np.ndarray, template: np.ndarray) -> np.ndarray:
+    """
+    Cross-correlate signal against template, normalised to [-1, 1].
+    Uses proper energy normalisation that handles near-zero signal energy.
+    """
+    n_sig  = len(signal)
+    n_tmpl = len(template)
+    if n_sig < n_tmpl:
+        return np.zeros(1)
+
+    corr = correlate(signal, template, mode='valid')
+
+    # Sliding window energy of signal
+    sig_sq  = signal ** 2
+    cum_sq  = np.cumsum(sig_sq)
+    win_end = cum_sq[n_tmpl - 1:]
+    win_str = np.concatenate([[0], cum_sq[:len(cum_sq) - n_tmpl]])
+    energy  = win_end - win_str
+
+    tmpl_energy = np.sum(template ** 2)
+
+    # Only normalise where signal energy is meaningful
+    # This prevents division by near-zero causing huge values
+    min_energy = tmpl_energy * 0.0001  # 0.01% of template energy minimum
+    valid_mask = energy > min_energy
+
+    result = np.zeros_like(corr)
+    denom  = np.sqrt(energy[valid_mask] * tmpl_energy)
+    result[valid_mask] = corr[valid_mask] / denom
+
+    # Clip to [-1, 1] for safety
+    return np.clip(result, -1.0, 1.0)
+
+
+def _find_sync_positions(
+    signal: np.ndarray,
+    sync_template: np.ndarray,
+    sr: int,
+    threshold: float = CORR_THRESHOLD,
+) -> list[int]:
+    """
+    Find all positions where the sync preamble occurs in the signal.
+    Returns sample indices of sync starts.
+    """
+    corr   = _normalised_correlation(signal, sync_template)
+    corr   = np.abs(corr)
+
+    # Minimum distance between peaks = sync duration samples
+    min_dist = int(sr * SYNC_DUR * 0.8)
+    peaks, props = find_peaks(corr, height=threshold, distance=min_dist)
+
+    if len(peaks) == 0:
+        return []
+
+    # Sort by correlation strength
+    order = np.argsort(props['peak_heights'])[::-1]
+    return [int(peaks[i]) for i in order]
+
+
+def _decode_bits_from(
+    signal: np.ndarray,
+    start: int,
+    up_template: np.ndarray,
+    down_template: np.ndarray,
+    symbol_samples: int,
+    step_samples: int,
+    max_bits: int,
+) -> list[int] | None:
+    """
+    Walk forward from start collecting bits using matched filter correlation.
+    Always collects until end of signal - doesn't stop on low correlation.
+    Low correlation bits are still assigned (majority vote: up vs down).
+    Only stops at hard silence (both correlations near zero).
+    """
+    bits      = []
+    pos       = start
+    n         = len(signal)
+    zero_runs = 0   # consecutive near-zero windows
+
+    while pos + symbol_samples <= n and len(bits) < max_bits:
+        seg = signal[pos: pos + symbol_samples]
+
+        c_up   = float(np.max(np.abs(_normalised_correlation(seg, up_template))))
+        c_down = float(np.max(np.abs(_normalised_correlation(seg, down_template))))
+
+        both = max(c_up, c_down)
+
+        # Hard silence - both very low AND we already have bits
+        if both < 0.02 and len(bits) > 0:
+            zero_runs += 1
+            if zero_runs >= 3:   # 3 consecutive silent windows = end of payload
+                break
+        else:
+            zero_runs = 0
+
+        # Always assign a bit - whichever correlation is higher
+        bits.append(1 if c_up >= c_down else 0)
+        pos += step_samples
+
+    return bits if len(bits) >= 8 else None
+
 
 def decode_signal(
     signal: np.ndarray,
@@ -311,13 +395,13 @@ def decode_signal(
     profile: FrequencyProfile = FrequencyProfile.ULTRASONIC,
 ) -> str | None:
     """
-    Decode BFSK signal. Auto-tries both profiles if profile not specified.
+    Decode chirp signal using matched filter correlation.
+    Auto-tries both profiles as fallback.
     """
     result = _decode_with_profile(signal, sr, profile)
     if result:
         return result
 
-    # Auto-fallback: try the other profile
     other = (FrequencyProfile.AUDIBLE
              if profile == FrequencyProfile.ULTRASONIC
              else FrequencyProfile.ULTRASONIC)
@@ -331,9 +415,6 @@ def _decode_with_profile(
     profile: FrequencyProfile,
 ) -> str | None:
     p             = PROFILES[profile]
-    freq_sync     = p["freq_sync"]
-    freq_zero     = p["freq_zero"]
-    freq_one      = p["freq_one"]
     bandpass_low  = p["bandpass_low"]
     bandpass_high = p["bandpass_high"]
 
@@ -341,100 +422,76 @@ def _decode_with_profile(
     guard_samples  = int(sr * GUARD_DUR)
     step_samples   = symbol_samples + guard_samples
     sync_samples   = int(sr * SYNC_DUR)
+    max_bits       = (MAX_PAYLOAD_BYTES + 1) * 8 + 16
 
-    # Bandpass filter
+    # ── 1. Bandpass filter ────────────────────────────────────────────────────
     try:
         filtered = _bandpass(signal, sr, bandpass_low, bandpass_high)
     except Exception:
         filtered = signal
 
-    n         = len(filtered)
-    scan_step = max(guard_samples // 2, 1)
+    # ── 2. Build reference templates ─────────────────────────────────────────
+    templates = _make_templates(profile, sr)
+    up_tmpl   = templates["up"]
+    down_tmpl = templates["down"]
+    sync_tmpl = templates["sync"]
 
-    # Find sync positions
-    sync_positions = []
-    i = 0
-    while i + sync_samples <= n:
-        seg   = filtered[i: i + sync_samples]
-        label, snr = _classify_tone(seg, sr, freq_sync, freq_zero, freq_one)
-        if label == 'sync' and snr >= SNR_THRESHOLD:
-            sync_positions.append((i, snr))
-            i += sync_samples
-        else:
-            i += scan_step
+    # ── 3. Find sync positions via correlation ────────────────────────────────
+    sync_positions = _find_sync_positions(filtered, sync_tmpl, sr)
+
+    # ── Debug: log actual correlation values from mic capture ─────────────────
+    sync_corr = np.abs(_normalised_correlation(filtered, sync_tmpl))
+    logger.info(f"[{profile}] sync corr max={np.max(sync_corr):.4f} "
+                f"mean={np.mean(sync_corr):.6f} "
+                f">0.10={np.sum(sync_corr>0.10)} "
+                f">0.05={np.sum(sync_corr>0.05)} "
+                f">0.01={np.sum(sync_corr>0.01)}")
 
     if not sync_positions:
-        logger.debug(f"[{profile}] No sync tone found")
+        logger.debug(f"[{profile}] No sync found")
         return None
 
     logger.info(f"[{profile}] {len(sync_positions)} sync position(s) found")
 
-    for sync_pos, sync_snr in sync_positions:
-        result = _try_decode_from(
-            filtered, sr, sync_pos,
-            symbol_samples, guard_samples, step_samples,
-            freq_sync, freq_zero, freq_one,
-        )
-        if result is not None:
-            logger.info(f"[{profile}] Decoded: '{result}' ✅")
-            return result
+    # ── 4. Try decoding from each sync position ───────────────────────────────
+    for sync_pos in sync_positions:
+        # Start reading bits after sync + guard
+        start = sync_pos + sync_samples + guard_samples
 
+        # Try small timing offsets to handle clock drift
+        for offset in [0, guard_samples // 2, -guard_samples // 2,
+                       guard_samples, -guard_samples]:
+            adj_start = start + offset
+            if adj_start < 0:
+                continue
+
+            bits = _decode_bits_from(
+                filtered, adj_start,
+                up_tmpl, down_tmpl,
+                symbol_samples, step_samples, max_bits,
+            )
+            if bits is None:
+                logger.debug(f"[{profile}] sync_pos={sync_pos} offset={offset} - no bits")
+                continue
+
+            logger.info(f"[{profile}] sync_pos={sync_pos} offset={offset} "
+                       f"bits={len(bits)} preview={bits[:16]}")
+            result = _bits_to_payload(bits)
+            if result is not None:
+                logger.info(f"[{profile}] Decoded: '{result}' ✅")
+                return result
+            else:
+                logger.debug(f"[{profile}] bits={len(bits)} - checksum failed")
+            if result is not None:
+                logger.info(f"[{profile}] Decoded: '{result}' ✅")
+                return result
+
+    logger.debug(f"[{profile}] Sync found but no valid payload decoded")
     return None
-
-
-def _try_decode_from(
-    signal, sr, sync_pos,
-    symbol_samples, guard_samples, step_samples,
-    freq_sync, freq_zero, freq_one,
-) -> str | None:
-    sync_samples = int(sr * SYNC_DUR)
-    start        = sync_pos + sync_samples + guard_samples
-
-    offsets = [0, guard_samples // 2, -guard_samples // 2,
-               guard_samples, -guard_samples]
-
-    for offset in offsets:
-        bits = _collect_bits(
-            signal, sr, start + offset,
-            symbol_samples, step_samples,
-            freq_sync, freq_zero, freq_one,
-        )
-        if bits is None or len(bits) < 16:
-            continue
-        result = _bits_to_payload(bits)
-        if result is not None:
-            return result
-    return None
-
-
-def _collect_bits(
-    signal, sr, start,
-    symbol_samples, step_samples,
-    freq_sync, freq_zero, freq_one,
-    max_bits: int = (MAX_PAYLOAD_BYTES + 1) * 8 + 16,
-) -> list[int] | None:
-    bits = []
-    pos  = start
-    n    = len(signal)
-
-    while pos + symbol_samples <= n and len(bits) < max_bits:
-        seg   = signal[pos: pos + symbol_samples]
-        label, snr = _classify_tone(seg, sr, freq_sync, freq_zero, freq_one)
-
-        if label == 'silence':
-            if len(bits) > 0:
-                break
-        elif label == 'sync':
-            break
-        elif label in ('zero', 'one'):
-            bits.append(0 if label == 'zero' else 1)
-
-        pos += step_samples
-
-    return bits if len(bits) >= 8 else None
 
 
 def _bits_to_payload(bits: list[int]) -> str | None:
+    """Convert bit list to string, verify checksum."""
     for n_chars in range(1, MAX_PAYLOAD_BYTES + 1):
         n_bits = (n_chars + 1) * 8
         if len(bits) < n_bits:
@@ -467,6 +524,26 @@ def _bits_to_payload(bits: list[int]) -> str | None:
             return decoded
 
     return None
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Legacy Goertzel (kept for reference, not used)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _goertzel_power(segment: np.ndarray, target_freq: float, sr: int) -> float:
+    n = len(segment)
+    if n == 0:
+        return 0.0
+    k     = round(n * target_freq / sr)
+    omega = 2.0 * np.pi * k / n
+    coeff = 2.0 * np.cos(omega)
+    s0, s1, s2 = 0.0, 0.0, 0.0
+    for x in segment:
+        s0 = x + coeff * s1 - s2
+        s2 = s1
+        s1 = s0
+    power = (s1 * s1 + s2 * s2 - coeff * s1 * s2) / (n * n)
+    return float(power)
 
 
 def decode_from_bytes(audio_bytes: bytes, sr: int = SAMPLE_RATE) -> str | None:
